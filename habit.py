@@ -83,6 +83,31 @@ def cmd_delete(args: argparse.Namespace) -> None:
     print(f"Deleted habit #{args.id}.")
 
 
+def cmd_rename(args: argparse.Namespace) -> None:
+    items = _load_items()
+    for item in items:
+        if item.get("id") == args.id:
+            old_title = item.get("title", "")
+            item["title"] = args.title.strip()
+            _save_items(items)
+            print(f"Renamed habit #{args.id}: {old_title} -> {item['title']}")
+            return
+    print(f"Habit #{args.id} not found.")
+
+
+def cmd_stats(_: argparse.Namespace) -> None:
+    items = _load_items()
+    total = len(items)
+    completed = sum(1 for item in items if item.get("done"))
+    active = total - completed
+    if total == 0:
+        print("No habits yet.")
+        return
+    print(f"Total: {total}")
+    print(f"Active: {active}")
+    print(f"Completed: {completed}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Local-first habit tracker")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -102,6 +127,14 @@ def build_parser() -> argparse.ArgumentParser:
     delete = sub.add_parser("delete", help="Delete a habit")
     delete.add_argument("id", type=int, help="Habit id")
     delete.set_defaults(func=cmd_delete)
+
+    rename = sub.add_parser("rename", help="Rename a habit")
+    rename.add_argument("id", type=int, help="Habit id")
+    rename.add_argument("title", help="New habit title")
+    rename.set_defaults(func=cmd_rename)
+
+    stats = sub.add_parser("stats", help="Show habit stats")
+    stats.set_defaults(func=cmd_stats)
 
     return parser
 

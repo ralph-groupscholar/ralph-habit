@@ -9,6 +9,8 @@ python habit.py add "Drink water"
 python habit.py list
 python habit.py done 1
 python habit.py list --all
+python habit.py rename 1 "Drink more water"
+python habit.py stats
 ```
 
 Data lives in `~/.ralph-habit.json`.
