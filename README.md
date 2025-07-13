@@ -7,6 +7,9 @@ A tiny, local-first habit tracker for the terminal.
 ```bash
 python habit.py add "Drink water"
 python habit.py list
+python habit.py checkin 1
+python habit.py checkin 1 --date 2026-02-07
+python habit.py streak 1
 python habit.py done 1
 python habit.py list --all
 python habit.py rename 1 "Drink more water"
