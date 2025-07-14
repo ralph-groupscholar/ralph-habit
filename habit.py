@@ -100,6 +100,29 @@ def _count_window_checkins(checkins: Set[str], end_date: date, days: int) -> int
     return sum(1 for day in window if _format_date(day) in checkins)
 
 
+def _date_range(start_date: date, end_date: date) -> List[date]:
+    if end_date < start_date:
+        return []
+    span = (end_date - start_date).days
+    return [start_date + timedelta(days=offset) for offset in range(span + 1)]
+
+
+def _resolve_dates(args: argparse.Namespace) -> Optional[List[date]]:
+    if args.date and (args.start or args.end):
+        print("Use either --date or --start/--end, not both.")
+        return None
+    if args.start or args.end:
+        start_date = _parse_date(args.start) if args.start else _parse_date(args.end)
+        end_date = _parse_date(args.end) if args.end else start_date
+        dates = _date_range(start_date, end_date)
+        if not dates:
+            print("End date must be on or after start date.")
+            return None
+        return dates
+    target_date = _today_local() if args.date is None else _parse_date(args.date)
+    return [target_date]
+
+
 def cmd_add(args: argparse.Namespace) -> None:
     items = _load_items()
     item = {
@@ -174,16 +197,58 @@ def cmd_checkin(args: argparse.Namespace) -> None:
     if item.get("done"):
         print(f"Habit #{args.id} is archived. Rename or add a new habit to keep tracking.")
         return
-    target_date = _today_local() if args.date is None else _parse_date(args.date)
-    checkins = _get_checkin_set(item)
-    date_key = _format_date(target_date)
-    if date_key in checkins:
-        print(f"Habit #{args.id} already checked in for {date_key}.")
+    dates = _resolve_dates(args)
+    if dates is None:
         return
-    checkins.add(date_key)
+    checkins = _get_checkin_set(item)
+    added = 0
+    for target_date in dates:
+        date_key = _format_date(target_date)
+        if date_key not in checkins:
+            checkins.add(date_key)
+            added += 1
     item["checkins"] = sorted(checkins)
     _save_items(items)
-    print(f"Checked in habit #{args.id}: {item.get('title', '')} ({date_key})")
+    if added == 0:
+        print(f"No new check-ins added for habit #{args.id}.")
+        return
+    if len(dates) == 1:
+        print(f"Checked in habit #{args.id}: {item.get('title', '')} ({_format_date(dates[0])})")
+        return
+    print(
+        f"Checked in habit #{args.id}: {item.get('title', '')} "
+        f"({added} new from {_format_date(dates[0])} to {_format_date(dates[-1])})"
+    )
+
+
+def cmd_uncheck(args: argparse.Namespace) -> None:
+    items = _load_items()
+    item = _get_item(items, args.id)
+    if not item:
+        print(f"Habit #{args.id} not found.")
+        return
+    dates = _resolve_dates(args)
+    if dates is None:
+        return
+    checkins = _get_checkin_set(item)
+    removed = 0
+    for target_date in dates:
+        date_key = _format_date(target_date)
+        if date_key in checkins:
+            checkins.remove(date_key)
+            removed += 1
+    item["checkins"] = sorted(checkins)
+    _save_items(items)
+    if removed == 0:
+        print(f"No check-ins removed for habit #{args.id}.")
+        return
+    if len(dates) == 1:
+        print(f"Removed check-in for habit #{args.id} on {_format_date(dates[0])}.")
+        return
+    print(
+        f"Removed {removed} check-ins for habit #{args.id} "
+        f"from {_format_date(dates[0])} to {_format_date(dates[-1])}."
+    )
 
 
 def cmd_streak(args: argparse.Namespace) -> None:
@@ -254,6 +319,26 @@ def cmd_report(args: argparse.Namespace) -> None:
     print(f"Overall check-ins: {total_checkins}/{total_possible} ({overall_rate:.0f}%)")
 
 
+def cmd_history(args: argparse.Namespace) -> None:
+    items = _load_items()
+    item = _get_item(items, args.id)
+    if not item:
+        print(f"Habit #{args.id} not found.")
+        return
+    if args.days <= 0:
+        print("Days must be at least 1.")
+        return
+    end_date = _today_local() if args.date is None else _parse_date(args.date)
+    window = _window_dates(end_date, args.days)
+    checkins = _get_checkin_set(item)
+    window_labels = f"{_format_date(window[0])} → {_format_date(window[-1])}"
+    print(f"History: {item.get('title', '')} ({window_labels})")
+    for day in window:
+        day_key = _format_date(day)
+        mark = "✓" if day_key in checkins else "·"
+        print(f"{day_key} {mark}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Local-first habit tracker")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -282,7 +367,16 @@ def build_parser() -> argparse.ArgumentParser:
     checkin = sub.add_parser("checkin", help="Record a check-in for a habit")
     checkin.add_argument("id", type=int, help="Habit id")
     checkin.add_argument("--date", help="Override date (YYYY-MM-DD)")
+    checkin.add_argument("--start", help="Start date for range (YYYY-MM-DD)")
+    checkin.add_argument("--end", help="End date for range (YYYY-MM-DD)")
     checkin.set_defaults(func=cmd_checkin)
+
+    uncheck = sub.add_parser("uncheck", help="Remove a check-in for a habit")
+    uncheck.add_argument("id", type=int, help="Habit id")
+    uncheck.add_argument("--date", help="Override date (YYYY-MM-DD)")
+    uncheck.add_argument("--start", help="Start date for range (YYYY-MM-DD)")
+    uncheck.add_argument("--end", help="End date for range (YYYY-MM-DD)")
+    uncheck.set_defaults(func=cmd_uncheck)
 
     streak = sub.add_parser("streak", help="Show streak stats for a habit")
     streak.add_argument("id", type=int, help="Habit id")
@@ -297,6 +391,12 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--date", help="Override end date (YYYY-MM-DD)")
     report.add_argument("--all", action="store_true", help="Include completed habits")
     report.set_defaults(func=cmd_report)
+
+    history = sub.add_parser("history", help="Show daily check-ins for a habit")
+    history.add_argument("id", type=int, help="Habit id")
+    history.add_argument("--days", type=int, default=14, help="Number of days to include")
+    history.add_argument("--date", help="Override end date (YYYY-MM-DD)")
+    history.set_defaults(func=cmd_history)
 
     return parser
 
