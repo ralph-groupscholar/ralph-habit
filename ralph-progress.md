@@ -8,3 +8,6 @@
 
 ## Iteration 3
 - Added daily check-ins with streak tracking plus check-in visibility in listings.
+
+## Iteration 17
+- Added a report command to summarize habit performance across a configurable window with streak context.

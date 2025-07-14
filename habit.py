@@ -91,6 +91,15 @@ def _compute_streaks(checkins: Set[str], today: date) -> Dict[str, int]:
     return {"current": current, "longest": longest}
 
 
+def _window_dates(end_date: date, days: int) -> List[date]:
+    return [end_date - timedelta(days=offset) for offset in range(days - 1, -1, -1)]
+
+
+def _count_window_checkins(checkins: Set[str], end_date: date, days: int) -> int:
+    window = _window_dates(end_date, days)
+    return sum(1 for day in window if _format_date(day) in checkins)
+
+
 def cmd_add(args: argparse.Namespace) -> None:
     items = _load_items()
     item = {
@@ -209,6 +218,42 @@ def cmd_stats(_: argparse.Namespace) -> None:
     print(f"Check-ins: {total_checkins}")
 
 
+def cmd_report(args: argparse.Namespace) -> None:
+    items = _load_items()
+    if not args.all:
+        items = [i for i in items if not i.get("done")]
+    if not items:
+        print("No habits yet.")
+        return
+    if args.days <= 0:
+        print("Days must be at least 1.")
+        return
+    end_date = _today_local() if args.date is None else _parse_date(args.date)
+    window = _window_dates(end_date, args.days)
+    window_labels = f"{_format_date(window[0])} → {_format_date(window[-1])}"
+    total_possible = len(items) * args.days
+    total_checkins = 0
+
+    print(f"Report window: {window_labels} ({args.days} days)")
+    for item in items:
+        checkins = _get_checkin_set(item)
+        count = _count_window_checkins(checkins, end_date, args.days)
+        total_checkins += count
+        rate = (count / args.days) * 100
+        last_checkin = max(checkins) if checkins else "-"
+        streaks = _compute_streaks(checkins, end_date) if checkins else {"current": 0, "longest": 0}
+        print(
+            f"{item['id']:>3} {item.get('title', '')} | "
+            f"{count}/{args.days} ({rate:.0f}%) | "
+            f"current {streaks['current']} | "
+            f"best {streaks['longest']} | "
+            f"last {last_checkin}"
+        )
+
+    overall_rate = (total_checkins / total_possible) * 100 if total_possible else 0
+    print(f"Overall check-ins: {total_checkins}/{total_possible} ({overall_rate:.0f}%)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Local-first habit tracker")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -246,6 +291,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     stats = sub.add_parser("stats", help="Show habit stats")
     stats.set_defaults(func=cmd_stats)
+
+    report = sub.add_parser("report", help="Weekly or custom habit summary")
+    report.add_argument("--days", type=int, default=7, help="Number of days to include")
+    report.add_argument("--date", help="Override end date (YYYY-MM-DD)")
+    report.add_argument("--all", action="store_true", help="Include completed habits")
+    report.set_defaults(func=cmd_report)
 
     return parser
 

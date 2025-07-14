@@ -14,6 +14,9 @@ python habit.py done 1
 python habit.py list --all
 python habit.py rename 1 "Drink more water"
 python habit.py stats
+python habit.py report
+python habit.py report --days 14
+python habit.py report --date 2026-02-07 --all
 ```
 
 Data lives in `~/.ralph-habit.json`.
