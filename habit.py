@@ -3,9 +3,10 @@ import argparse
 import json
 import os
 from datetime import datetime, date, timedelta
-from typing import List, Dict, Any, Optional, Set
+from typing import List, Dict, Any, Optional, Set, Tuple
 
 DATA_PATH = os.path.expanduser("~/.ralph-habit.json")
+DEFAULT_PROFILE = "default"
 
 
 def _now_iso() -> str:
@@ -22,6 +23,17 @@ def _parse_date(value: str) -> date:
 
 def _format_date(value: date) -> str:
     return value.isoformat()
+
+
+def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        if value.endswith("Z"):
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def _normalize_item(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -70,6 +82,10 @@ def _get_checkin_set(item: Dict[str, Any]) -> Set[str]:
     return {v for v in raw if isinstance(v, str)}
 
 
+def _touch_item(item: Dict[str, Any]) -> None:
+    item["updated_at"] = _now_iso()
+
+
 def _compute_streaks(checkins: Set[str], today: date) -> Dict[str, int]:
     dates = sorted(_parse_date(d) for d in checkins)
     if not dates:
@@ -110,6 +126,28 @@ def _date_range(start_date: date, end_date: date) -> List[date]:
     return [start_date + timedelta(days=offset) for offset in range(span + 1)]
 
 
+def _weekday_index(label: str) -> int:
+    options = {
+        "mon": 0,
+        "tue": 1,
+        "wed": 2,
+        "thu": 3,
+        "fri": 4,
+        "sat": 5,
+        "sun": 6,
+    }
+    return options[label]
+
+
+def _week_window(end_date: date, week_start: str) -> Tuple[date, date]:
+    start_idx = _weekday_index(week_start)
+    current_idx = end_date.weekday()
+    delta = (current_idx - start_idx) % 7
+    start_date = end_date - timedelta(days=delta)
+    end_date = start_date + timedelta(days=6)
+    return start_date, end_date
+
+
 def _resolve_dates(args: argparse.Namespace) -> Optional[List[date]]:
     if args.date and (args.start or args.end):
         print("Use either --date or --start/--end, not both.")
@@ -126,12 +164,75 @@ def _resolve_dates(args: argparse.Namespace) -> Optional[List[date]]:
     return [target_date]
 
 
+def _db_profile() -> str:
+    return os.environ.get("RALPH_HABIT_PROFILE", DEFAULT_PROFILE)
+
+
+def _db_url() -> Optional[str]:
+    return os.environ.get("DATABASE_URL") or os.environ.get("RALPH_HABIT_DB_URL")
+
+
+def _get_db_connection():
+    db_url = _db_url()
+    if not db_url:
+        print("Database sync needs DATABASE_URL or RALPH_HABIT_DB_URL.")
+        return None
+    try:
+        import psycopg
+    except ImportError:
+        print("Database sync needs psycopg installed (pip install 'psycopg[binary]').")
+        return None
+    return psycopg.connect(db_url)
+
+
+def _ensure_table(cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ralph_habit_items (
+            profile TEXT NOT NULL,
+            id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            created_at TEXT,
+            updated_at TEXT,
+            done BOOLEAN,
+            done_at TEXT,
+            checkins JSONB,
+            PRIMARY KEY (profile, id)
+        )
+        """
+    )
+
+
+def _local_item_payload(item: Dict[str, Any]) -> Dict[str, Any]:
+    payload = dict(item)
+    if not payload.get("created_at"):
+        payload["created_at"] = _now_iso()
+    if not payload.get("updated_at"):
+        payload["updated_at"] = payload["created_at"]
+    payload["checkins"] = sorted(_get_checkin_set(payload))
+    payload["done"] = bool(payload.get("done"))
+    return payload
+
+
+def _compare_updated(
+    local_item: Dict[str, Any], db_item: Dict[str, Any]
+) -> Tuple[Optional[datetime], Optional[datetime]]:
+    local_updated = _parse_iso_datetime(local_item.get("updated_at")) or _parse_iso_datetime(
+        local_item.get("created_at")
+    )
+    db_updated = _parse_iso_datetime(db_item.get("updated_at")) or _parse_iso_datetime(
+        db_item.get("created_at")
+    )
+    return local_updated, db_updated
+
+
 def cmd_add(args: argparse.Namespace) -> None:
     items = _load_items()
     item = {
         "id": _next_id(items),
         "title": args.title.strip(),
         "created_at": _now_iso(),
+        "updated_at": _now_iso(),
         "done": False,
         "checkins": [],
     }
@@ -168,6 +269,7 @@ def cmd_done(args: argparse.Namespace) -> None:
             return
         item["done"] = True
         item["done_at"] = _now_iso()
+        _touch_item(item)
         _save_items(items)
         print(f"Completed habit #{args.id}: {item.get('title', '')}")
         return
@@ -190,6 +292,7 @@ def cmd_rename(args: argparse.Namespace) -> None:
     if item:
         old_title = item.get("title", "")
         item["title"] = args.title.strip()
+        _touch_item(item)
         _save_items(items)
         print(f"Renamed habit #{args.id}: {old_title} -> {item['title']}")
         return
@@ -216,6 +319,7 @@ def cmd_checkin(args: argparse.Namespace) -> None:
             checkins.add(date_key)
             added += 1
     item["checkins"] = sorted(checkins)
+    _touch_item(item)
     _save_items(items)
     if added == 0:
         print(f"No new check-ins added for habit #{args.id}.")
@@ -246,6 +350,7 @@ def cmd_uncheck(args: argparse.Namespace) -> None:
             checkins.remove(date_key)
             removed += 1
     item["checkins"] = sorted(checkins)
+    _touch_item(item)
     _save_items(items)
     if removed == 0:
         print(f"No check-ins removed for habit #{args.id}.")
@@ -356,6 +461,40 @@ def cmd_history(args: argparse.Namespace) -> None:
         print(f"{day_key} {mark}")
 
 
+def cmd_week(args: argparse.Namespace) -> None:
+    items = _load_items()
+    if not args.all:
+        items = [i for i in items if not i.get("done")]
+    if not items:
+        print("No habits yet.")
+        return
+    target_date = _today_local() if args.date is None else _parse_date(args.date)
+    start_date, end_date = _week_window(target_date, args.week_start)
+    window = _date_range(start_date, end_date)
+    window_labels = f"{_format_date(start_date)} → {_format_date(end_date)}"
+    elapsed_days = (target_date - start_date).days + 1
+    remaining_days = 7 - elapsed_days
+    print(
+        f"Week view ({args.week_start} start): {window_labels} "
+        f"(day {elapsed_days} of 7)"
+    )
+    for item in items:
+        checkins = _get_checkin_set(item)
+        count = sum(1 for day in window if _format_date(day) in checkins)
+        goal = item.get("goal_per_week")
+        if isinstance(goal, int):
+            remaining = max(goal - count, 0)
+            needed = (
+                f"need {remaining} more over {remaining_days} day(s)"
+                if remaining > 0
+                else "goal hit"
+            )
+            goal_label = f"{count}/{goal} {needed}"
+        else:
+            goal_label = f"{count}/-"
+        print(f"{item['id']:>3} {item.get('title', '')} | {goal_label}")
+
+
 def cmd_goal(args: argparse.Namespace) -> None:
     items = _load_items()
     item = _get_item(items, args.id)
@@ -436,6 +575,12 @@ def build_parser() -> argparse.ArgumentParser:
     history.add_argument("--days", type=int, default=14, help="Number of days to include")
     history.add_argument("--date", help="Override end date (YYYY-MM-DD)")
     history.set_defaults(func=cmd_history)
+
+    week = sub.add_parser("week", help="Weekly goal progress view")
+    week.add_argument("--date", help="Override reference date (YYYY-MM-DD)")
+    week.add_argument("--week-start", choices=["mon", "tue", "wed", "thu", "fri", "sat", "sun"], default="mon")
+    week.add_argument("--all", action="store_true", help="Include completed habits")
+    week.set_defaults(func=cmd_week)
 
     goal = sub.add_parser("goal", help="Set or clear a weekly goal for a habit")
     goal.add_argument("id", type=int, help="Habit id")

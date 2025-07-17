@@ -17,3 +17,6 @@
 
 ## Iteration 18 (cont.)
 - Added weekly goal tracking per habit plus goal context in lists, stats, and reports.
+
+## Iteration 19
+- Added weekly progress view with configurable week start and goal pacing guidance.
