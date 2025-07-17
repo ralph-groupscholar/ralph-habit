@@ -29,6 +29,9 @@ def _normalize_item(item: Dict[str, Any]) -> Dict[str, Any]:
         return {}
     if "checkins" not in item or not isinstance(item.get("checkins"), list):
         item["checkins"] = []
+    goal = item.get("goal_per_week")
+    if goal is not None and not isinstance(goal, int):
+        item["goal_per_week"] = None
     return item
 
 
@@ -148,7 +151,12 @@ def cmd_list(args: argparse.Namespace) -> None:
         status = "✓" if item.get("done") else "·"
         checkins = _get_checkin_set(item)
         last_checkin = max(checkins) if checkins else "-"
-        print(f"{item['id']:>3} {status} {item.get('title', '')} (last: {last_checkin})")
+        goal = item.get("goal_per_week")
+        goal_label = f"goal: {goal}/wk" if isinstance(goal, int) else "goal: -"
+        print(
+            f"{item['id']:>3} {status} {item.get('title', '')} "
+            f"({goal_label}, last: {last_checkin})"
+        )
 
 
 def cmd_done(args: argparse.Namespace) -> None:
@@ -279,6 +287,8 @@ def cmd_stats(_: argparse.Namespace) -> None:
     print(f"Total: {total}")
     print(f"Active: {active}")
     print(f"Completed: {completed}")
+    goals = sum(1 for item in items if isinstance(item.get("goal_per_week"), int))
+    print(f"With goals: {goals}")
     total_checkins = sum(len(_get_checkin_set(item)) for item in items)
     print(f"Check-ins: {total_checkins}")
 
@@ -307,12 +317,19 @@ def cmd_report(args: argparse.Namespace) -> None:
         rate = (count / args.days) * 100
         last_checkin = max(checkins) if checkins else "-"
         streaks = _compute_streaks(checkins, end_date) if checkins else {"current": 0, "longest": 0}
+        goal = item.get("goal_per_week")
+        if isinstance(goal, int):
+            expected = (goal * args.days) / 7
+            goal_label = f"goal {goal}/wk pace {count}/{expected:.1f}"
+        else:
+            goal_label = "goal -"
         print(
             f"{item['id']:>3} {item.get('title', '')} | "
             f"{count}/{args.days} ({rate:.0f}%) | "
             f"current {streaks['current']} | "
             f"best {streaks['longest']} | "
-            f"last {last_checkin}"
+            f"last {last_checkin} | "
+            f"{goal_label}"
         )
 
     overall_rate = (total_checkins / total_possible) * 100 if total_possible else 0
@@ -337,6 +354,28 @@ def cmd_history(args: argparse.Namespace) -> None:
         day_key = _format_date(day)
         mark = "✓" if day_key in checkins else "·"
         print(f"{day_key} {mark}")
+
+
+def cmd_goal(args: argparse.Namespace) -> None:
+    items = _load_items()
+    item = _get_item(items, args.id)
+    if not item:
+        print(f"Habit #{args.id} not found.")
+        return
+    if args.clear:
+        item["goal_per_week"] = None
+        _save_items(items)
+        print(f"Cleared goal for habit #{args.id}.")
+        return
+    if args.per_week == 0:
+        print("Provide a goal between 1 and 7, or use --clear.")
+        return
+    if args.per_week < 1 or args.per_week > 7:
+        print("Goal per week must be between 1 and 7.")
+        return
+    item["goal_per_week"] = args.per_week
+    _save_items(items)
+    print(f"Set goal for habit #{args.id}: {args.per_week}/week.")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -397,6 +436,12 @@ def build_parser() -> argparse.ArgumentParser:
     history.add_argument("--days", type=int, default=14, help="Number of days to include")
     history.add_argument("--date", help="Override end date (YYYY-MM-DD)")
     history.set_defaults(func=cmd_history)
+
+    goal = sub.add_parser("goal", help="Set or clear a weekly goal for a habit")
+    goal.add_argument("id", type=int, help="Habit id")
+    goal.add_argument("per_week", type=int, nargs="?", default=0, help="Times per week (1-7)")
+    goal.add_argument("--clear", action="store_true", help="Clear the goal")
+    goal.set_defaults(func=cmd_goal)
 
     return parser
 

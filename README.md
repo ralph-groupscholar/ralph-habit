@@ -23,6 +23,8 @@ python habit.py report --date 2026-02-07 --all
 python habit.py history 1
 python habit.py history 1 --days 30
 python habit.py history 1 --date 2026-02-07
+python habit.py goal 1 5
+python habit.py goal 1 --clear
 ```
 
 Data lives in `~/.ralph-habit.json`.

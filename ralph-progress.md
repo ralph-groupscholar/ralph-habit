@@ -13,7 +13,7 @@
 - Added a report command to summarize habit performance across a configurable window with streak context.
 
 ## Iteration 18
-- Added range-aware check-ins plus an uncheck command for removing single or ranged check-ins.
-
-## Iteration 18
 - Added a history command to display day-by-day check-ins over a configurable window.
+
+## Iteration 18 (cont.)
+- Added weekly goal tracking per habit plus goal context in lists, stats, and reports.
