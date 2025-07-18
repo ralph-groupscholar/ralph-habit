@@ -148,6 +148,12 @@ def _week_window(end_date: date, week_start: str) -> Tuple[date, date]:
     return start_date, end_date
 
 
+def _last_checkin_date(checkins: Set[str]) -> Optional[date]:
+    if not checkins:
+        return None
+    return max(_parse_date(value) for value in checkins)
+
+
 def _resolve_dates(args: argparse.Namespace) -> Optional[List[date]]:
     if args.date and (args.start or args.end):
         print("Use either --date or --start/--end, not both.")
@@ -461,6 +467,102 @@ def cmd_history(args: argparse.Namespace) -> None:
         print(f"{day_key} {mark}")
 
 
+def cmd_sync(_: argparse.Namespace) -> None:
+    items = _load_items()
+    if not items:
+        print("No habits to sync.")
+        return
+    conn = _get_db_connection()
+    if conn is None:
+        return
+    profile = _db_profile()
+    with conn:
+        with conn.cursor() as cursor:
+            _ensure_table(cursor)
+            for item in items:
+                payload = _local_item_payload(item)
+                cursor.execute(
+                    """
+                    INSERT INTO ralph_habit_items
+                        (profile, id, title, created_at, updated_at, done, done_at, checkins)
+                    VALUES (%(profile)s, %(id)s, %(title)s, %(created_at)s, %(updated_at)s, %(done)s, %(done_at)s, %(checkins)s::jsonb)
+                    ON CONFLICT (profile, id) DO UPDATE SET
+                        title = EXCLUDED.title,
+                        created_at = EXCLUDED.created_at,
+                        updated_at = EXCLUDED.updated_at,
+                        done = EXCLUDED.done,
+                        done_at = EXCLUDED.done_at,
+                        checkins = EXCLUDED.checkins
+                    """,
+                    {
+                        "profile": profile,
+                        "id": payload.get("id"),
+                        "title": payload.get("title", ""),
+                        "created_at": payload.get("created_at"),
+                        "updated_at": payload.get("updated_at"),
+                        "done": payload.get("done"),
+                        "done_at": payload.get("done_at"),
+                        "checkins": json.dumps(payload.get("checkins", [])),
+                    },
+                )
+    conn.close()
+    print(f"Synced {len(items)} habit(s) to profile '{profile}'.")
+
+
+def cmd_pull(_: argparse.Namespace) -> None:
+    conn = _get_db_connection()
+    if conn is None:
+        return
+    profile = _db_profile()
+    with conn:
+        with conn.cursor() as cursor:
+            _ensure_table(cursor)
+            cursor.execute(
+                """
+                SELECT id, title, created_at, updated_at, done, done_at, checkins
+                FROM ralph_habit_items
+                WHERE profile = %s
+                ORDER BY id
+                """,
+                (profile,),
+            )
+            rows = cursor.fetchall()
+    conn.close()
+    if not rows:
+        print(f"No habits found for profile '{profile}'.")
+        return
+    items = _load_items()
+    local_by_id = {item.get("id"): item for item in items if isinstance(item.get("id"), int)}
+    merged: List[Dict[str, Any]] = []
+    merged_ids: Set[int] = set()
+    for row in rows:
+        db_item = {
+            "id": row[0],
+            "title": row[1],
+            "created_at": row[2],
+            "updated_at": row[3],
+            "done": row[4],
+            "done_at": row[5],
+            "checkins": row[6] if isinstance(row[6], list) else json.loads(row[6]) if row[6] else [],
+        }
+        local_item = local_by_id.get(db_item["id"])
+        if local_item:
+            local_updated, db_updated = _compare_updated(local_item, db_item)
+            if db_updated and (not local_updated or db_updated > local_updated):
+                merged.append(_normalize_item(db_item))
+            else:
+                merged.append(_normalize_item(local_item))
+            merged_ids.add(db_item["id"])
+        else:
+            merged.append(_normalize_item(db_item))
+            merged_ids.add(db_item["id"])
+    for item_id, local_item in local_by_id.items():
+        if item_id not in merged_ids:
+            merged.append(_normalize_item(local_item))
+    _save_items(merged)
+    print(f"Pulled {len(rows)} habit(s) from profile '{profile}' into local store.")
+
+
 def cmd_week(args: argparse.Namespace) -> None:
     items = _load_items()
     if not args.all:
@@ -495,6 +597,73 @@ def cmd_week(args: argparse.Namespace) -> None:
         print(f"{item['id']:>3} {item.get('title', '')} | {goal_label}")
 
 
+def cmd_nudge(args: argparse.Namespace) -> None:
+    items = _load_items()
+    if not args.all:
+        items = [i for i in items if not i.get("done")]
+    if not items:
+        print("No habits yet.")
+        return
+    if args.days < 0:
+        print("Days must be at least 0.")
+        return
+    target_date = _today_local() if args.date is None else _parse_date(args.date)
+    start_date, end_date = _week_window(target_date, args.week_start)
+    window = _date_range(start_date, end_date)
+    elapsed_days = (target_date - start_date).days + 1
+    remaining_days = 7 - elapsed_days
+    nudges: List[str] = []
+    for item in items:
+        checkins = _get_checkin_set(item)
+        last_date = _last_checkin_date(checkins)
+        days_since = (target_date - last_date).days if last_date else None
+        stale = last_date is None or (days_since is not None and days_since >= args.days)
+
+        count = sum(1 for day in window if _format_date(day) in checkins)
+        goal = item.get("goal_per_week")
+        behind_pace = False
+        impossible = False
+        pace_label = f"{count}/-"
+        if isinstance(goal, int):
+            expected = (goal * elapsed_days) / 7
+            behind_pace = count + 1e-9 < expected
+            remaining = max(goal - count, 0)
+            impossible = remaining > remaining_days
+            pace_label = f"{count}/{goal} pace {expected:.1f}"
+
+        if not stale and not behind_pace:
+            continue
+
+        status = []
+        if stale:
+            if last_date is None:
+                status.append("no check-ins yet")
+            else:
+                status.append(f"{days_since}d since last")
+        if behind_pace:
+            status.append("behind pace")
+        if impossible:
+            status.append("at risk")
+
+        last_label = _format_date(last_date) if last_date else "-"
+        nudges.append(
+            f"{item['id']:>3} {item.get('title', '')} | "
+            f"last {last_label} | "
+            f"week {pace_label} | "
+            f"{', '.join(status)}"
+        )
+
+    if not nudges:
+        print("All habits are on track.")
+        return
+    print(
+        f"Nudge view ({args.week_start} start, stale >= {args.days}d): "
+        f"{_format_date(start_date)} → {_format_date(end_date)}"
+    )
+    for line in nudges:
+        print(line)
+
+
 def cmd_goal(args: argparse.Namespace) -> None:
     items = _load_items()
     item = _get_item(items, args.id)
@@ -503,6 +672,7 @@ def cmd_goal(args: argparse.Namespace) -> None:
         return
     if args.clear:
         item["goal_per_week"] = None
+        _touch_item(item)
         _save_items(items)
         print(f"Cleared goal for habit #{args.id}.")
         return
@@ -513,6 +683,7 @@ def cmd_goal(args: argparse.Namespace) -> None:
         print("Goal per week must be between 1 and 7.")
         return
     item["goal_per_week"] = args.per_week
+    _touch_item(item)
     _save_items(items)
     print(f"Set goal for habit #{args.id}: {args.per_week}/week.")
 
@@ -576,11 +747,24 @@ def build_parser() -> argparse.ArgumentParser:
     history.add_argument("--date", help="Override end date (YYYY-MM-DD)")
     history.set_defaults(func=cmd_history)
 
+    sync = sub.add_parser("sync", help="Sync local habits to Postgres")
+    sync.set_defaults(func=cmd_sync)
+
+    pull = sub.add_parser("pull", help="Pull habits from Postgres into local store")
+    pull.set_defaults(func=cmd_pull)
+
     week = sub.add_parser("week", help="Weekly goal progress view")
     week.add_argument("--date", help="Override reference date (YYYY-MM-DD)")
     week.add_argument("--week-start", choices=["mon", "tue", "wed", "thu", "fri", "sat", "sun"], default="mon")
     week.add_argument("--all", action="store_true", help="Include completed habits")
     week.set_defaults(func=cmd_week)
+
+    nudge = sub.add_parser("nudge", help="Show habits that need attention")
+    nudge.add_argument("--days", type=int, default=3, help="Days since last check-in to flag")
+    nudge.add_argument("--date", help="Override reference date (YYYY-MM-DD)")
+    nudge.add_argument("--week-start", choices=["mon", "tue", "wed", "thu", "fri", "sat", "sun"], default="mon")
+    nudge.add_argument("--all", action="store_true", help="Include completed habits")
+    nudge.set_defaults(func=cmd_nudge)
 
     goal = sub.add_parser("goal", help="Set or clear a weekly goal for a habit")
     goal.add_argument("id", type=int, help="Habit id")

@@ -15,6 +15,9 @@
 ## Iteration 18
 - Added a history command to display day-by-day check-ins over a configurable window.
 
+## Iteration 14
+- Added optional Postgres sync/pull commands with profile-aware upserts and timestamp tracking.
+
 ## Iteration 18 (cont.)
 - Added weekly goal tracking per habit plus goal context in lists, stats, and reports.
 

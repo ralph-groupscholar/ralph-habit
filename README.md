@@ -28,6 +28,19 @@ python habit.py week --week-start sun
 python habit.py week --date 2026-02-07 --all
 python habit.py goal 1 5
 python habit.py goal 1 --clear
+python habit.py sync
+python habit.py pull
 ```
 
 Data lives in `~/.ralph-habit.json`.
+
+## Postgres Sync (Optional)
+
+To sync to a Postgres database, set `DATABASE_URL` or `RALPH_HABIT_DB_URL` and install
+`psycopg`:
+
+```bash
+pip install "psycopg[binary]"
+```
+
+Use `RALPH_HABIT_PROFILE` to keep multiple devices separate (defaults to `default`).
