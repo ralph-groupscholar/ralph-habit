@@ -23,3 +23,9 @@
 
 ## Iteration 19
 - Added weekly progress view with configurable week start and goal pacing guidance.
+
+## Iteration 20
+- Added a nudge command to surface stale habits and weekly goal pacing risks.
+
+## Iteration 15
+- Added weekly goal persistence to Postgres sync/pull and database schema migration.

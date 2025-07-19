@@ -26,6 +26,9 @@ python habit.py history 1 --date 2026-02-07
 python habit.py week
 python habit.py week --week-start sun
 python habit.py week --date 2026-02-07 --all
+python habit.py nudge
+python habit.py nudge --days 2
+python habit.py nudge --week-start sun --date 2026-02-07
 python habit.py goal 1 5
 python habit.py goal 1 --clear
 python habit.py sync
@@ -44,3 +47,4 @@ pip install "psycopg[binary]"
 ```
 
 Use `RALPH_HABIT_PROFILE` to keep multiple devices separate (defaults to `default`).
+Weekly goals are included in sync/pull operations.

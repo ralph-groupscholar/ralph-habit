@@ -202,11 +202,13 @@ def _ensure_table(cursor) -> None:
             updated_at TEXT,
             done BOOLEAN,
             done_at TEXT,
+            goal_per_week INTEGER,
             checkins JSONB,
             PRIMARY KEY (profile, id)
         )
         """
     )
+    cursor.execute("ALTER TABLE ralph_habit_items ADD COLUMN IF NOT EXISTS goal_per_week INTEGER")
 
 
 def _local_item_payload(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -217,6 +219,8 @@ def _local_item_payload(item: Dict[str, Any]) -> Dict[str, Any]:
         payload["updated_at"] = payload["created_at"]
     payload["checkins"] = sorted(_get_checkin_set(payload))
     payload["done"] = bool(payload.get("done"))
+    goal = payload.get("goal_per_week")
+    payload["goal_per_week"] = goal if isinstance(goal, int) else None
     return payload
 
 
@@ -484,14 +488,15 @@ def cmd_sync(_: argparse.Namespace) -> None:
                 cursor.execute(
                     """
                     INSERT INTO ralph_habit_items
-                        (profile, id, title, created_at, updated_at, done, done_at, checkins)
-                    VALUES (%(profile)s, %(id)s, %(title)s, %(created_at)s, %(updated_at)s, %(done)s, %(done_at)s, %(checkins)s::jsonb)
+                        (profile, id, title, created_at, updated_at, done, done_at, goal_per_week, checkins)
+                    VALUES (%(profile)s, %(id)s, %(title)s, %(created_at)s, %(updated_at)s, %(done)s, %(done_at)s, %(goal_per_week)s, %(checkins)s::jsonb)
                     ON CONFLICT (profile, id) DO UPDATE SET
                         title = EXCLUDED.title,
                         created_at = EXCLUDED.created_at,
                         updated_at = EXCLUDED.updated_at,
                         done = EXCLUDED.done,
                         done_at = EXCLUDED.done_at,
+                        goal_per_week = EXCLUDED.goal_per_week,
                         checkins = EXCLUDED.checkins
                     """,
                     {
@@ -502,6 +507,7 @@ def cmd_sync(_: argparse.Namespace) -> None:
                         "updated_at": payload.get("updated_at"),
                         "done": payload.get("done"),
                         "done_at": payload.get("done_at"),
+                        "goal_per_week": payload.get("goal_per_week"),
                         "checkins": json.dumps(payload.get("checkins", [])),
                     },
                 )
@@ -519,7 +525,7 @@ def cmd_pull(_: argparse.Namespace) -> None:
             _ensure_table(cursor)
             cursor.execute(
                 """
-                SELECT id, title, created_at, updated_at, done, done_at, checkins
+                SELECT id, title, created_at, updated_at, done, done_at, goal_per_week, checkins
                 FROM ralph_habit_items
                 WHERE profile = %s
                 ORDER BY id
@@ -543,7 +549,8 @@ def cmd_pull(_: argparse.Namespace) -> None:
             "updated_at": row[3],
             "done": row[4],
             "done_at": row[5],
-            "checkins": row[6] if isinstance(row[6], list) else json.loads(row[6]) if row[6] else [],
+            "goal_per_week": row[6],
+            "checkins": row[7] if isinstance(row[7], list) else json.loads(row[7]) if row[7] else [],
         }
         local_item = local_by_id.get(db_item["id"])
         if local_item:
