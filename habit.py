@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import csv
 import json
 import os
 from datetime import datetime, date, timedelta
@@ -234,6 +235,40 @@ def _compare_updated(
         db_item.get("created_at")
     )
     return local_updated, db_updated
+
+
+def _parse_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y"}
+
+
+def _parse_goal(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        goal = int(value)
+    except (TypeError, ValueError):
+        return None
+    if 1 <= goal <= 7:
+        return goal
+    return None
+
+
+def _parse_checkins(raw: str) -> List[str]:
+    if not raw:
+        return []
+    parts = [part.strip() for part in raw.split(";") if part.strip()]
+    valid: List[str] = []
+    for part in parts:
+        try:
+            _parse_date(part)
+        except ValueError:
+            continue
+        valid.append(part)
+    return sorted(set(valid))
 
 
 def cmd_add(args: argparse.Namespace) -> None:
@@ -695,6 +730,120 @@ def cmd_goal(args: argparse.Namespace) -> None:
     print(f"Set goal for habit #{args.id}: {args.per_week}/week.")
 
 
+def cmd_export(args: argparse.Namespace) -> None:
+    items = _load_items()
+    if not items:
+        print("No habits to export.")
+        return
+    path = os.path.expanduser(args.path)
+    fieldnames = [
+        "id",
+        "title",
+        "done",
+        "done_at",
+        "created_at",
+        "updated_at",
+        "goal_per_week",
+        "checkins",
+    ]
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for item in items:
+            checkins = sorted(_get_checkin_set(item))
+            writer.writerow(
+                {
+                    "id": item.get("id"),
+                    "title": item.get("title", ""),
+                    "done": "true" if item.get("done") else "false",
+                    "done_at": item.get("done_at", ""),
+                    "created_at": item.get("created_at", ""),
+                    "updated_at": item.get("updated_at", ""),
+                    "goal_per_week": item.get("goal_per_week") or "",
+                    "checkins": ";".join(checkins),
+                }
+            )
+    print(f"Exported {len(items)} habit(s) to {path}.")
+
+
+def cmd_import(args: argparse.Namespace) -> None:
+    path = os.path.expanduser(args.path)
+    if not os.path.exists(path):
+        print(f"File not found: {path}")
+        return
+    items = [] if args.replace else _load_items()
+    used_ids = {item.get("id") for item in items if isinstance(item.get("id"), int)}
+    next_id = _next_id(items) if items else 1
+    added = 0
+    updated = 0
+    skipped = 0
+
+    with open(path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            title = (row.get("title") or "").strip()
+            if not title:
+                skipped += 1
+                continue
+            raw_id = row.get("id")
+            item_id = None
+            if raw_id:
+                try:
+                    item_id = int(raw_id)
+                except ValueError:
+                    item_id = None
+            checkins = _parse_checkins(row.get("checkins", ""))
+            goal = _parse_goal(row.get("goal_per_week"))
+            done = _parse_bool(row.get("done"))
+            done_at = row.get("done_at") or None
+            created_at = row.get("created_at") or None
+            updated_at = row.get("updated_at") or None
+
+            if item_id in used_ids:
+                if not args.update:
+                    skipped += 1
+                    continue
+                item = _get_item(items, item_id)
+                if not item:
+                    skipped += 1
+                    continue
+                item["title"] = title
+                item["done"] = done
+                item["done_at"] = done_at or item.get("done_at")
+                item["goal_per_week"] = goal
+                if checkins:
+                    merged = _get_checkin_set(item).union(checkins)
+                    item["checkins"] = sorted(merged)
+                item["created_at"] = item.get("created_at") or created_at or _now_iso()
+                item["updated_at"] = updated_at or _now_iso()
+                updated += 1
+                continue
+
+            if item_id is None or item_id in used_ids:
+                item_id = next_id
+                next_id += 1
+            used_ids.add(item_id)
+            new_item = {
+                "id": item_id,
+                "title": title,
+                "done": done,
+                "done_at": done_at,
+                "created_at": created_at or _now_iso(),
+                "updated_at": updated_at or created_at or _now_iso(),
+                "goal_per_week": goal,
+                "checkins": checkins,
+            }
+            items.append(_normalize_item(new_item))
+            added += 1
+
+    _save_items(items)
+    print(f"Imported {added} habit(s) from {path}.")
+    if updated:
+        print(f"Updated {updated} existing habit(s).")
+    if skipped:
+        print(f"Skipped {skipped} row(s).")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Local-first habit tracker")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -778,6 +927,16 @@ def build_parser() -> argparse.ArgumentParser:
     goal.add_argument("per_week", type=int, nargs="?", default=0, help="Times per week (1-7)")
     goal.add_argument("--clear", action="store_true", help="Clear the goal")
     goal.set_defaults(func=cmd_goal)
+
+    export_cmd = sub.add_parser("export", help="Export habits to CSV")
+    export_cmd.add_argument("path", nargs="?", default="~/ralph-habit-export.csv", help="CSV output path")
+    export_cmd.set_defaults(func=cmd_export)
+
+    import_cmd = sub.add_parser("import", help="Import habits from CSV")
+    import_cmd.add_argument("path", help="CSV input path")
+    import_cmd.add_argument("--update", action="store_true", help="Update habits with matching ids")
+    import_cmd.add_argument("--replace", action="store_true", help="Replace local habits before import")
+    import_cmd.set_defaults(func=cmd_import)
 
     return parser
 

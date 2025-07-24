@@ -31,6 +31,10 @@ python habit.py nudge --days 2
 python habit.py nudge --week-start sun --date 2026-02-07
 python habit.py goal 1 5
 python habit.py goal 1 --clear
+python habit.py export
+python habit.py export ~/habits.csv
+python habit.py import ~/habits.csv
+python habit.py import ~/habits.csv --update
 python habit.py sync
 python habit.py pull
 ```
