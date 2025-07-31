@@ -29,3 +29,6 @@
 
 ## Iteration 15
 - Added weekly goal persistence to Postgres sync/pull and database schema migration.
+
+## Iteration 21
+- Added a today command for an at-a-glance view of check-in status, streaks, and weekly pacing.

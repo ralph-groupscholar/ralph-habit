@@ -3,6 +3,7 @@ import argparse
 import csv
 import json
 import os
+import calendar
 from datetime import datetime, date, timedelta
 from typing import List, Dict, Any, Optional, Set, Tuple
 
@@ -42,6 +43,9 @@ def _normalize_item(item: Dict[str, Any]) -> Dict[str, Any]:
         return {}
     if "checkins" not in item or not isinstance(item.get("checkins"), list):
         item["checkins"] = []
+    note = item.get("note")
+    if note is not None and not isinstance(note, str):
+        item["note"] = None
     goal = item.get("goal_per_week")
     if goal is not None and not isinstance(goal, int):
         item["goal_per_week"] = None
@@ -149,6 +153,11 @@ def _week_window(end_date: date, week_start: str) -> Tuple[date, date]:
     return start_date, end_date
 
 
+def _month_weeks(target_date: date, week_start: str) -> List[List[date]]:
+    cal = calendar.Calendar(firstweekday=_weekday_index(week_start))
+    return cal.monthdatescalendar(target_date.year, target_date.month)
+
+
 def _last_checkin_date(checkins: Set[str]) -> Optional[date]:
     if not checkins:
         return None
@@ -204,12 +213,14 @@ def _ensure_table(cursor) -> None:
             done BOOLEAN,
             done_at TEXT,
             goal_per_week INTEGER,
+            note TEXT,
             checkins JSONB,
             PRIMARY KEY (profile, id)
         )
         """
     )
     cursor.execute("ALTER TABLE ralph_habit_items ADD COLUMN IF NOT EXISTS goal_per_week INTEGER")
+    cursor.execute("ALTER TABLE ralph_habit_items ADD COLUMN IF NOT EXISTS note TEXT")
 
 
 def _local_item_payload(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -222,6 +233,8 @@ def _local_item_payload(item: Dict[str, Any]) -> Dict[str, Any]:
     payload["done"] = bool(payload.get("done"))
     goal = payload.get("goal_per_week")
     payload["goal_per_week"] = goal if isinstance(goal, int) else None
+    note = payload.get("note")
+    payload["note"] = note.strip() if isinstance(note, str) and note.strip() else None
     return payload
 
 
@@ -271,6 +284,15 @@ def _parse_checkins(raw: str) -> List[str]:
     return sorted(set(valid))
 
 
+def _note_label(note: Optional[str], limit: int = 24) -> str:
+    if not note:
+        return "note: -"
+    clean = note.strip().replace("\n", " ")
+    if len(clean) <= limit:
+        return f"note: {clean}"
+    return f"note: {clean[: max(limit - 3, 0)]}..."
+
+
 def cmd_add(args: argparse.Namespace) -> None:
     items = _load_items()
     item = {
@@ -280,6 +302,7 @@ def cmd_add(args: argparse.Namespace) -> None:
         "updated_at": _now_iso(),
         "done": False,
         "checkins": [],
+        "note": None,
     }
     items.append(item)
     _save_items(items)
@@ -299,9 +322,10 @@ def cmd_list(args: argparse.Namespace) -> None:
         last_checkin = max(checkins) if checkins else "-"
         goal = item.get("goal_per_week")
         goal_label = f"goal: {goal}/wk" if isinstance(goal, int) else "goal: -"
+        note_label = _note_label(item.get("note"))
         print(
             f"{item['id']:>3} {status} {item.get('title', '')} "
-            f"({goal_label}, last: {last_checkin})"
+            f"({goal_label}, {note_label}, last: {last_checkin})"
         )
 
 
@@ -506,6 +530,46 @@ def cmd_history(args: argparse.Namespace) -> None:
         print(f"{day_key} {mark}")
 
 
+def cmd_today(args: argparse.Namespace) -> None:
+    items = _load_items()
+    if not args.all:
+        items = [i for i in items if not i.get("done")]
+    if not items:
+        print("No habits yet.")
+        return
+    target_date = _today_local() if args.date is None else _parse_date(args.date)
+    start_date, end_date = _week_window(target_date, args.week_start)
+    window = _date_range(start_date, end_date)
+    elapsed_days = (target_date - start_date).days + 1
+    window_labels = f"{_format_date(start_date)} → {_format_date(end_date)}"
+    due_count = 0
+    print(f"Today view ({args.week_start} start): {window_labels}")
+    for item in items:
+        checkins = _get_checkin_set(item)
+        today_key = _format_date(target_date)
+        did_today = today_key in checkins
+        if not did_today:
+            due_count += 1
+        last_checkin = max(checkins) if checkins else "-"
+        streaks = _compute_streaks(checkins, target_date) if checkins else {"current": 0, "longest": 0}
+        count_week = sum(1 for day in window if _format_date(day) in checkins)
+        goal = item.get("goal_per_week")
+        if isinstance(goal, int):
+            expected = (goal * elapsed_days) / 7
+            pace_label = f"{count_week}/{goal} pace {expected:.1f}"
+        else:
+            pace_label = f"{count_week}/-"
+        today_label = "today ✓" if did_today else "today ·"
+        print(
+            f"{item['id']:>3} {item.get('title', '')} | "
+            f"{today_label} | "
+            f"streak {streaks['current']} | "
+            f"last {last_checkin} | "
+            f"week {pace_label}"
+        )
+    print(f"Due today: {due_count}/{len(items)}")
+
+
 def cmd_sync(_: argparse.Namespace) -> None:
     items = _load_items()
     if not items:
@@ -523,8 +587,8 @@ def cmd_sync(_: argparse.Namespace) -> None:
                 cursor.execute(
                     """
                     INSERT INTO ralph_habit_items
-                        (profile, id, title, created_at, updated_at, done, done_at, goal_per_week, checkins)
-                    VALUES (%(profile)s, %(id)s, %(title)s, %(created_at)s, %(updated_at)s, %(done)s, %(done_at)s, %(goal_per_week)s, %(checkins)s::jsonb)
+                        (profile, id, title, created_at, updated_at, done, done_at, goal_per_week, note, checkins)
+                    VALUES (%(profile)s, %(id)s, %(title)s, %(created_at)s, %(updated_at)s, %(done)s, %(done_at)s, %(goal_per_week)s, %(note)s, %(checkins)s::jsonb)
                     ON CONFLICT (profile, id) DO UPDATE SET
                         title = EXCLUDED.title,
                         created_at = EXCLUDED.created_at,
@@ -532,6 +596,7 @@ def cmd_sync(_: argparse.Namespace) -> None:
                         done = EXCLUDED.done,
                         done_at = EXCLUDED.done_at,
                         goal_per_week = EXCLUDED.goal_per_week,
+                        note = EXCLUDED.note,
                         checkins = EXCLUDED.checkins
                     """,
                     {
@@ -543,6 +608,7 @@ def cmd_sync(_: argparse.Namespace) -> None:
                         "done": payload.get("done"),
                         "done_at": payload.get("done_at"),
                         "goal_per_week": payload.get("goal_per_week"),
+                        "note": payload.get("note"),
                         "checkins": json.dumps(payload.get("checkins", [])),
                     },
                 )
@@ -560,7 +626,7 @@ def cmd_pull(_: argparse.Namespace) -> None:
             _ensure_table(cursor)
             cursor.execute(
                 """
-                SELECT id, title, created_at, updated_at, done, done_at, goal_per_week, checkins
+                SELECT id, title, created_at, updated_at, done, done_at, goal_per_week, note, checkins
                 FROM ralph_habit_items
                 WHERE profile = %s
                 ORDER BY id
@@ -585,7 +651,8 @@ def cmd_pull(_: argparse.Namespace) -> None:
             "done": row[4],
             "done_at": row[5],
             "goal_per_week": row[6],
-            "checkins": row[7] if isinstance(row[7], list) else json.loads(row[7]) if row[7] else [],
+            "note": row[7],
+            "checkins": row[8] if isinstance(row[8], list) else json.loads(row[8]) if row[8] else [],
         }
         local_item = local_by_id.get(db_item["id"])
         if local_item:
@@ -730,6 +797,76 @@ def cmd_goal(args: argparse.Namespace) -> None:
     print(f"Set goal for habit #{args.id}: {args.per_week}/week.")
 
 
+def cmd_month(args: argparse.Namespace) -> None:
+    items = _load_items()
+    item = _get_item(items, args.id)
+    if not item:
+        print(f"Habit #{args.id} not found.")
+        return
+    if args.month and args.date:
+        print("Use either --month or --date, not both.")
+        return
+    if args.month:
+        try:
+            year, month = [int(part) for part in args.month.split("-", 1)]
+            target_date = date(year, month, 1)
+        except (ValueError, TypeError):
+            print("Month must be in YYYY-MM format.")
+            return
+    else:
+        target_date = _today_local() if args.date is None else _parse_date(args.date)
+
+    checkins = _get_checkin_set(item)
+    weeks = _month_weeks(target_date, args.week_start)
+    month_label = target_date.strftime("%Y-%m")
+    labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    start_idx = _weekday_index(args.week_start)
+    ordered_labels = labels[start_idx:] + labels[:start_idx]
+
+    print(f"Month view ({args.week_start} start): {item.get('title', '')} [{month_label}]")
+    print(" ".join(ordered_labels))
+
+    checkin_count = 0
+    days_in_month = calendar.monthrange(target_date.year, target_date.month)[1]
+    for week in weeks:
+        row = []
+        for day in week:
+            if day.month != target_date.month:
+                row.append("   ")
+                continue
+            key = _format_date(day)
+            mark = "✓" if key in checkins else "·"
+            if key in checkins:
+                checkin_count += 1
+            row.append(f"{day.day:2d}{mark}")
+        print(" ".join(row))
+
+    rate = (checkin_count / days_in_month) * 100 if days_in_month else 0
+    print(f"Check-ins: {checkin_count}/{days_in_month} ({rate:.0f}%)")
+
+
+def cmd_note(args: argparse.Namespace) -> None:
+    items = _load_items()
+    item = _get_item(items, args.id)
+    if not item:
+        print(f"Habit #{args.id} not found.")
+        return
+    if args.clear:
+        item["note"] = None
+        _touch_item(item)
+        _save_items(items)
+        print(f"Cleared note for habit #{args.id}.")
+        return
+    if not args.text or not args.text.strip():
+        print("Provide note text or use --clear.")
+        return
+    note = args.text.strip()
+    item["note"] = note
+    _touch_item(item)
+    _save_items(items)
+    print(f"Updated note for habit #{args.id}.")
+
+
 def cmd_export(args: argparse.Namespace) -> None:
     items = _load_items()
     if not items:
@@ -744,6 +881,7 @@ def cmd_export(args: argparse.Namespace) -> None:
         "created_at",
         "updated_at",
         "goal_per_week",
+        "note",
         "checkins",
     ]
     with open(path, "w", encoding="utf-8", newline="") as f:
@@ -760,6 +898,7 @@ def cmd_export(args: argparse.Namespace) -> None:
                     "created_at": item.get("created_at", ""),
                     "updated_at": item.get("updated_at", ""),
                     "goal_per_week": item.get("goal_per_week") or "",
+                    "note": item.get("note") or "",
                     "checkins": ";".join(checkins),
                 }
             )
@@ -794,6 +933,7 @@ def cmd_import(args: argparse.Namespace) -> None:
                     item_id = None
             checkins = _parse_checkins(row.get("checkins", ""))
             goal = _parse_goal(row.get("goal_per_week"))
+            note = (row.get("note") or "").strip() or None
             done = _parse_bool(row.get("done"))
             done_at = row.get("done_at") or None
             created_at = row.get("created_at") or None
@@ -811,6 +951,7 @@ def cmd_import(args: argparse.Namespace) -> None:
                 item["done"] = done
                 item["done_at"] = done_at or item.get("done_at")
                 item["goal_per_week"] = goal
+                item["note"] = note
                 if checkins:
                     merged = _get_checkin_set(item).union(checkins)
                     item["checkins"] = sorted(merged)
@@ -831,6 +972,7 @@ def cmd_import(args: argparse.Namespace) -> None:
                 "created_at": created_at or _now_iso(),
                 "updated_at": updated_at or created_at or _now_iso(),
                 "goal_per_week": goal,
+                "note": note,
                 "checkins": checkins,
             }
             items.append(_normalize_item(new_item))
@@ -903,6 +1045,12 @@ def build_parser() -> argparse.ArgumentParser:
     history.add_argument("--date", help="Override end date (YYYY-MM-DD)")
     history.set_defaults(func=cmd_history)
 
+    today = sub.add_parser("today", help="Show today's check-in status across habits")
+    today.add_argument("--date", help="Override reference date (YYYY-MM-DD)")
+    today.add_argument("--week-start", choices=["mon", "tue", "wed", "thu", "fri", "sat", "sun"], default="mon")
+    today.add_argument("--all", action="store_true", help="Include completed habits")
+    today.set_defaults(func=cmd_today)
+
     sync = sub.add_parser("sync", help="Sync local habits to Postgres")
     sync.set_defaults(func=cmd_sync)
 
@@ -927,6 +1075,13 @@ def build_parser() -> argparse.ArgumentParser:
     goal.add_argument("per_week", type=int, nargs="?", default=0, help="Times per week (1-7)")
     goal.add_argument("--clear", action="store_true", help="Clear the goal")
     goal.set_defaults(func=cmd_goal)
+
+    month = sub.add_parser("month", help="Show a monthly calendar view for a habit")
+    month.add_argument("id", type=int, help="Habit id")
+    month.add_argument("--month", help="Override month (YYYY-MM)")
+    month.add_argument("--date", help="Override reference date (YYYY-MM-DD)")
+    month.add_argument("--week-start", choices=["mon", "tue", "wed", "thu", "fri", "sat", "sun"], default="mon")
+    month.set_defaults(func=cmd_month)
 
     export_cmd = sub.add_parser("export", help="Export habits to CSV")
     export_cmd.add_argument("path", nargs="?", default="~/ralph-habit-export.csv", help="CSV output path")

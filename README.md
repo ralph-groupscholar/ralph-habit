@@ -23,6 +23,9 @@ python habit.py report --date 2026-02-07 --all
 python habit.py history 1
 python habit.py history 1 --days 30
 python habit.py history 1 --date 2026-02-07
+python habit.py today
+python habit.py today --week-start sun
+python habit.py today --date 2026-02-07 --all
 python habit.py week
 python habit.py week --week-start sun
 python habit.py week --date 2026-02-07 --all
