@@ -1076,6 +1076,12 @@ def build_parser() -> argparse.ArgumentParser:
     goal.add_argument("--clear", action="store_true", help="Clear the goal")
     goal.set_defaults(func=cmd_goal)
 
+    note = sub.add_parser("note", help="Set or clear a note for a habit")
+    note.add_argument("id", type=int, help="Habit id")
+    note.add_argument("text", nargs="?", help="Note text")
+    note.add_argument("--clear", action="store_true", help="Clear the note")
+    note.set_defaults(func=cmd_note)
+
     month = sub.add_parser("month", help="Show a monthly calendar view for a habit")
     month.add_argument("id", type=int, help="Habit id")
     month.add_argument("--month", help="Override month (YYYY-MM)")

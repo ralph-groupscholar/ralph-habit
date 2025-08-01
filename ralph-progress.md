@@ -30,5 +30,11 @@
 ## Iteration 15
 - Added weekly goal persistence to Postgres sync/pull and database schema migration.
 
+## Iteration 16
+- Added per-habit notes with CLI management, export/import support, and Postgres sync.
+
+## Iteration 21
+- Added a monthly calendar view command for per-habit check-ins with summary rate.
+
 ## Iteration 21
 - Added a today command for an at-a-glance view of check-in status, streaks, and weekly pacing.

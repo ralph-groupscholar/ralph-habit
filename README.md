@@ -34,6 +34,11 @@ python habit.py nudge --days 2
 python habit.py nudge --week-start sun --date 2026-02-07
 python habit.py goal 1 5
 python habit.py goal 1 --clear
+python habit.py note 1 "Focus on weekdays"
+python habit.py note 1 --clear
+python habit.py month 1
+python habit.py month 1 --month 2026-02
+python habit.py month 1 --date 2026-02-07 --week-start sun
 python habit.py export
 python habit.py export ~/habits.csv
 python habit.py import ~/habits.csv
@@ -54,4 +59,4 @@ pip install "psycopg[binary]"
 ```
 
 Use `RALPH_HABIT_PROFILE` to keep multiple devices separate (defaults to `default`).
-Weekly goals are included in sync/pull operations.
+Weekly goals and notes are included in sync/pull operations.
