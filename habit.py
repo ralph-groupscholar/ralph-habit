@@ -164,6 +164,12 @@ def _last_checkin_date(checkins: Set[str]) -> Optional[date]:
     return max(_parse_date(value) for value in checkins)
 
 
+def _days_since(target_date: date, last_date: Optional[date]) -> Optional[int]:
+    if last_date is None:
+        return None
+    return (target_date - last_date).days
+
+
 def _resolve_dates(args: argparse.Namespace) -> Optional[List[date]]:
     if args.date and (args.start or args.end):
         print("Use either --date or --start/--end, not both.")
@@ -773,6 +779,61 @@ def cmd_nudge(args: argparse.Namespace) -> None:
         print(line)
 
 
+def cmd_review(args: argparse.Namespace) -> None:
+    items = _load_items()
+    if not args.all:
+        items = [i for i in items if not i.get("done")]
+    if not items:
+        print("No habits yet.")
+        return
+    if args.days <= 0:
+        print("Days must be at least 1.")
+        return
+    if args.stale_days < 0:
+        print("Stale days must be at least 0.")
+        return
+
+    end_date = _today_local() if args.date is None else _parse_date(args.date)
+    window = _window_dates(end_date, args.days)
+    window_labels = f"{_format_date(window[0])} → {_format_date(window[-1])}"
+    week_start, week_end = _week_window(end_date, args.week_start)
+    week_window = _date_range(week_start, week_end)
+    elapsed_days = (end_date - week_start).days + 1
+
+    print(f"Review window: {window_labels} ({args.days} days)")
+    print(f"Week window ({args.week_start} start): {_format_date(week_start)} → {_format_date(week_end)}")
+
+    for item in items:
+        checkins = _get_checkin_set(item)
+        last_date = _last_checkin_date(checkins)
+        days_since = _days_since(end_date, last_date)
+        last_label = _format_date(last_date) if last_date else "-"
+        since_label = f"{days_since}d" if days_since is not None else "-"
+        stale = days_since is None or days_since >= args.stale_days
+        stale_label = "stale" if stale else "ok"
+
+        count_window = _count_window_checkins(checkins, end_date, args.days)
+        rate = (count_window / args.days) * 100
+        streaks = _compute_streaks(checkins, end_date) if checkins else {"current": 0, "longest": 0}
+
+        count_week = sum(1 for day in week_window if _format_date(day) in checkins)
+        goal = item.get("goal_per_week")
+        if isinstance(goal, int):
+            expected = (goal * elapsed_days) / 7
+            pace_label = f"{count_week}/{goal} pace {expected:.1f}"
+        else:
+            pace_label = f"{count_week}/-"
+
+        print(
+            f"{item['id']:>3} {item.get('title', '')} | "
+            f"last {last_label} ({since_label}) | "
+            f"{stale_label} | "
+            f"{count_window}/{args.days} ({rate:.0f}%) | "
+            f"streak {streaks['current']} | "
+            f"week {pace_label}"
+        )
+
+
 def cmd_goal(args: argparse.Namespace) -> None:
     items = _load_items()
     item = _get_item(items, args.id)
@@ -1069,6 +1130,14 @@ def build_parser() -> argparse.ArgumentParser:
     nudge.add_argument("--week-start", choices=["mon", "tue", "wed", "thu", "fri", "sat", "sun"], default="mon")
     nudge.add_argument("--all", action="store_true", help="Include completed habits")
     nudge.set_defaults(func=cmd_nudge)
+
+    review = sub.add_parser("review", help="Review habit momentum across a window")
+    review.add_argument("--days", type=int, default=30, help="Number of days to include")
+    review.add_argument("--stale-days", type=int, default=3, help="Days since last check-in to flag")
+    review.add_argument("--date", help="Override reference date (YYYY-MM-DD)")
+    review.add_argument("--week-start", choices=["mon", "tue", "wed", "thu", "fri", "sat", "sun"], default="mon")
+    review.add_argument("--all", action="store_true", help="Include completed habits")
+    review.set_defaults(func=cmd_review)
 
     goal = sub.add_parser("goal", help="Set or clear a weekly goal for a habit")
     goal.add_argument("id", type=int, help="Habit id")

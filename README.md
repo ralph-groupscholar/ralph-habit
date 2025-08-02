@@ -32,6 +32,9 @@ python habit.py week --date 2026-02-07 --all
 python habit.py nudge
 python habit.py nudge --days 2
 python habit.py nudge --week-start sun --date 2026-02-07
+python habit.py review
+python habit.py review --days 21 --stale-days 5
+python habit.py review --date 2026-02-07 --week-start sun --all
 python habit.py goal 1 5
 python habit.py goal 1 --clear
 python habit.py note 1 "Focus on weekdays"

@@ -38,3 +38,6 @@
 
 ## Iteration 21
 - Added a today command for an at-a-glance view of check-in status, streaks, and weekly pacing.
+
+## Iteration 22
+- Added a review command to summarize recent momentum, staleness, streaks, and weekly pace.
