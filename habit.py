@@ -299,6 +299,15 @@ def _note_label(note: Optional[str], limit: int = 24) -> str:
     return f"note: {clean[: max(limit - 3, 0)]}..."
 
 
+def _short_list(values: List[str], limit: int) -> str:
+    if limit <= 0:
+        return ""
+    if len(values) <= limit:
+        return ", ".join(values)
+    remainder = len(values) - limit
+    return f"{', '.join(values[:limit])} +{remainder} more"
+
+
 def cmd_add(args: argparse.Namespace) -> None:
     items = _load_items()
     item = {
@@ -834,6 +843,45 @@ def cmd_review(args: argparse.Namespace) -> None:
         )
 
 
+def cmd_timeline(args: argparse.Namespace) -> None:
+    items = _load_items()
+    if not args.all:
+        items = [i for i in items if not i.get("done")]
+    if not items:
+        print("No habits yet.")
+        return
+    if args.days <= 0:
+        print("Days must be at least 1.")
+        return
+    end_date = _today_local() if args.date is None else _parse_date(args.date)
+    window = _window_dates(end_date, args.days)
+    window_labels = f"{_format_date(window[0])} → {_format_date(window[-1])}"
+    print(f"Timeline: {window_labels} ({args.days} days)")
+
+    total_habits = len(items)
+    total_checkins = 0
+    for day in window:
+        day_key = _format_date(day)
+        checked_titles = []
+        for item in items:
+            checkins = _get_checkin_set(item)
+            if day_key in checkins:
+                checked_titles.append(item.get("title", ""))
+        checked_titles = [title for title in checked_titles if title]
+        count = len(checked_titles)
+        total_checkins += count
+        rate = (count / total_habits) * 100 if total_habits else 0
+        summary = _short_list(checked_titles, args.limit)
+        if summary:
+            print(f"{day_key} | {count}/{total_habits} ({rate:.0f}%) | {summary}")
+        else:
+            print(f"{day_key} | {count}/{total_habits} ({rate:.0f}%)")
+
+    total_possible = total_habits * args.days
+    overall_rate = (total_checkins / total_possible) * 100 if total_possible else 0
+    print(f"Overall check-ins: {total_checkins}/{total_possible} ({overall_rate:.0f}%)")
+
+
 def cmd_goal(args: argparse.Namespace) -> None:
     items = _load_items()
     item = _get_item(items, args.id)
@@ -1138,6 +1186,13 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--week-start", choices=["mon", "tue", "wed", "thu", "fri", "sat", "sun"], default="mon")
     review.add_argument("--all", action="store_true", help="Include completed habits")
     review.set_defaults(func=cmd_review)
+
+    timeline = sub.add_parser("timeline", help="Show daily check-in coverage across habits")
+    timeline.add_argument("--days", type=int, default=14, help="Number of days to include")
+    timeline.add_argument("--date", help="Override end date (YYYY-MM-DD)")
+    timeline.add_argument("--limit", type=int, default=3, help="Max habit titles to list per day")
+    timeline.add_argument("--all", action="store_true", help="Include completed habits")
+    timeline.set_defaults(func=cmd_timeline)
 
     goal = sub.add_parser("goal", help="Set or clear a weekly goal for a habit")
     goal.add_argument("id", type=int, help="Habit id")

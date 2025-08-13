@@ -41,3 +41,6 @@
 
 ## Iteration 22
 - Added a review command to summarize recent momentum, staleness, streaks, and weekly pace.
+
+## Iteration 12
+- Added a timeline command to show daily habit coverage with compact per-day check-in summaries.
