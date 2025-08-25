@@ -40,6 +40,9 @@ python habit.py timeline --days 10 --limit 5
 python habit.py timeline --date 2026-02-07 --all
 python habit.py goal 1 5
 python habit.py goal 1 --clear
+python habit.py schedule 1 mon wed fri
+python habit.py schedule 1
+python habit.py schedule 1 --clear
 python habit.py note 1 "Focus on weekdays"
 python habit.py note 1 --clear
 python habit.py month 1
@@ -65,4 +68,4 @@ pip install "psycopg[binary]"
 ```
 
 Use `RALPH_HABIT_PROFILE` to keep multiple devices separate (defaults to `default`).
-Weekly goals and notes are included in sync/pull operations.
+Weekly goals, notes, and schedules are included in sync/pull operations.

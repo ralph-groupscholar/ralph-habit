@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Optional, Set, Tuple
 
 DATA_PATH = os.path.expanduser("~/.ralph-habit.json")
 DEFAULT_PROFILE = "default"
+WEEKDAY_ORDER = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 
 def _now_iso() -> str:
@@ -43,6 +44,8 @@ def _normalize_item(item: Dict[str, Any]) -> Dict[str, Any]:
         return {}
     if "checkins" not in item or not isinstance(item.get("checkins"), list):
         item["checkins"] = []
+    if "target_days" in item:
+        item["target_days"] = _clean_target_days(item.get("target_days"))
     note = item.get("note")
     if note is not None and not isinstance(note, str):
         item["note"] = None
@@ -132,16 +135,45 @@ def _date_range(start_date: date, end_date: date) -> List[date]:
 
 
 def _weekday_index(label: str) -> int:
-    options = {
-        "mon": 0,
-        "tue": 1,
-        "wed": 2,
-        "thu": 3,
-        "fri": 4,
-        "sat": 5,
-        "sun": 6,
-    }
-    return options[label]
+    return WEEKDAY_ORDER.index(label)
+
+
+def _weekday_key(value: date) -> str:
+    return WEEKDAY_ORDER[value.weekday()]
+
+
+def _clean_target_days(value: Any) -> List[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        raw_values = [value]
+    elif isinstance(value, list):
+        raw_values = value
+    else:
+        return []
+    normalized = set()
+    for entry in raw_values:
+        if not isinstance(entry, str):
+            continue
+        label = entry.strip().lower()
+        if len(label) >= 3:
+            label = label[:3]
+        if label in WEEKDAY_ORDER:
+            normalized.add(label)
+    return [label for label in WEEKDAY_ORDER if label in normalized]
+
+
+def _target_days_label(days: List[str]) -> str:
+    if not days:
+        return "days: -"
+    return f"days: {','.join(days)}"
+
+
+def _parse_target_days(values: List[str]) -> Optional[List[str]]:
+    cleaned = _clean_target_days(values)
+    if not cleaned:
+        return None
+    return cleaned
 
 
 def _week_window(end_date: date, week_start: str) -> Tuple[date, date]:
@@ -220,6 +252,7 @@ def _ensure_table(cursor) -> None:
             done_at TEXT,
             goal_per_week INTEGER,
             note TEXT,
+            target_days JSONB,
             checkins JSONB,
             PRIMARY KEY (profile, id)
         )
@@ -227,6 +260,7 @@ def _ensure_table(cursor) -> None:
     )
     cursor.execute("ALTER TABLE ralph_habit_items ADD COLUMN IF NOT EXISTS goal_per_week INTEGER")
     cursor.execute("ALTER TABLE ralph_habit_items ADD COLUMN IF NOT EXISTS note TEXT")
+    cursor.execute("ALTER TABLE ralph_habit_items ADD COLUMN IF NOT EXISTS target_days JSONB")
 
 
 def _local_item_payload(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -241,6 +275,7 @@ def _local_item_payload(item: Dict[str, Any]) -> Dict[str, Any]:
     payload["goal_per_week"] = goal if isinstance(goal, int) else None
     note = payload.get("note")
     payload["note"] = note.strip() if isinstance(note, str) and note.strip() else None
+    payload["target_days"] = _clean_target_days(payload.get("target_days"))
     return payload
 
 
@@ -290,6 +325,13 @@ def _parse_checkins(raw: str) -> List[str]:
     return sorted(set(valid))
 
 
+def _parse_target_days_csv(raw: str) -> List[str]:
+    if not raw:
+        return []
+    parts = [part.strip() for part in raw.split(";") if part.strip()]
+    return _clean_target_days(parts)
+
+
 def _note_label(note: Optional[str], limit: int = 24) -> str:
     if not note:
         return "note: -"
@@ -318,6 +360,7 @@ def cmd_add(args: argparse.Namespace) -> None:
         "done": False,
         "checkins": [],
         "note": None,
+        "target_days": [],
     }
     items.append(item)
     _save_items(items)
@@ -338,9 +381,10 @@ def cmd_list(args: argparse.Namespace) -> None:
         goal = item.get("goal_per_week")
         goal_label = f"goal: {goal}/wk" if isinstance(goal, int) else "goal: -"
         note_label = _note_label(item.get("note"))
+        target_label = _target_days_label(_clean_target_days(item.get("target_days")))
         print(
             f"{item['id']:>3} {status} {item.get('title', '')} "
-            f"({goal_label}, {note_label}, last: {last_checkin})"
+            f"({goal_label}, {note_label}, {target_label}, last: {last_checkin})"
         )
 
 
@@ -563,7 +607,9 @@ def cmd_today(args: argparse.Namespace) -> None:
         checkins = _get_checkin_set(item)
         today_key = _format_date(target_date)
         did_today = today_key in checkins
-        if not did_today:
+        target_days = _clean_target_days(item.get("target_days"))
+        scheduled = not target_days or _weekday_key(target_date) in target_days
+        if scheduled and not did_today:
             due_count += 1
         last_checkin = max(checkins) if checkins else "-"
         streaks = _compute_streaks(checkins, target_date) if checkins else {"current": 0, "longest": 0}
@@ -574,7 +620,12 @@ def cmd_today(args: argparse.Namespace) -> None:
             pace_label = f"{count_week}/{goal} pace {expected:.1f}"
         else:
             pace_label = f"{count_week}/-"
-        today_label = "today ✓" if did_today else "today ·"
+        if did_today:
+            today_label = "today ✓"
+        elif not scheduled:
+            today_label = "off-day"
+        else:
+            today_label = "today ·"
         print(
             f"{item['id']:>3} {item.get('title', '')} | "
             f"{today_label} | "
@@ -602,8 +653,8 @@ def cmd_sync(_: argparse.Namespace) -> None:
                 cursor.execute(
                     """
                     INSERT INTO ralph_habit_items
-                        (profile, id, title, created_at, updated_at, done, done_at, goal_per_week, note, checkins)
-                    VALUES (%(profile)s, %(id)s, %(title)s, %(created_at)s, %(updated_at)s, %(done)s, %(done_at)s, %(goal_per_week)s, %(note)s, %(checkins)s::jsonb)
+                        (profile, id, title, created_at, updated_at, done, done_at, goal_per_week, note, target_days, checkins)
+                    VALUES (%(profile)s, %(id)s, %(title)s, %(created_at)s, %(updated_at)s, %(done)s, %(done_at)s, %(goal_per_week)s, %(note)s, %(target_days)s::jsonb, %(checkins)s::jsonb)
                     ON CONFLICT (profile, id) DO UPDATE SET
                         title = EXCLUDED.title,
                         created_at = EXCLUDED.created_at,
@@ -612,6 +663,7 @@ def cmd_sync(_: argparse.Namespace) -> None:
                         done_at = EXCLUDED.done_at,
                         goal_per_week = EXCLUDED.goal_per_week,
                         note = EXCLUDED.note,
+                        target_days = EXCLUDED.target_days,
                         checkins = EXCLUDED.checkins
                     """,
                     {
@@ -624,6 +676,7 @@ def cmd_sync(_: argparse.Namespace) -> None:
                         "done_at": payload.get("done_at"),
                         "goal_per_week": payload.get("goal_per_week"),
                         "note": payload.get("note"),
+                        "target_days": json.dumps(payload.get("target_days", [])),
                         "checkins": json.dumps(payload.get("checkins", [])),
                     },
                 )
@@ -641,7 +694,7 @@ def cmd_pull(_: argparse.Namespace) -> None:
             _ensure_table(cursor)
             cursor.execute(
                 """
-                SELECT id, title, created_at, updated_at, done, done_at, goal_per_week, note, checkins
+                SELECT id, title, created_at, updated_at, done, done_at, goal_per_week, note, target_days, checkins
                 FROM ralph_habit_items
                 WHERE profile = %s
                 ORDER BY id
@@ -667,7 +720,8 @@ def cmd_pull(_: argparse.Namespace) -> None:
             "done_at": row[5],
             "goal_per_week": row[6],
             "note": row[7],
-            "checkins": row[8] if isinstance(row[8], list) else json.loads(row[8]) if row[8] else [],
+            "target_days": row[8] if isinstance(row[8], list) else json.loads(row[8]) if row[8] else [],
+            "checkins": row[9] if isinstance(row[9], list) else json.loads(row[9]) if row[9] else [],
         }
         local_item = local_by_id.get(db_item["id"])
         if local_item:
@@ -906,6 +960,33 @@ def cmd_goal(args: argparse.Namespace) -> None:
     print(f"Set goal for habit #{args.id}: {args.per_week}/week.")
 
 
+def cmd_schedule(args: argparse.Namespace) -> None:
+    items = _load_items()
+    item = _get_item(items, args.id)
+    if not item:
+        print(f"Habit #{args.id} not found.")
+        return
+    if args.clear:
+        item["target_days"] = []
+        _touch_item(item)
+        _save_items(items)
+        print(f"Cleared schedule for habit #{args.id}.")
+        return
+    if not args.days:
+        days = _clean_target_days(item.get("target_days"))
+        label = _target_days_label(days)
+        print(f"Habit #{args.id} schedule: {label}")
+        return
+    parsed = _parse_target_days(args.days)
+    if parsed is None:
+        print("Provide weekdays like: mon tue wed thu fri sat sun.")
+        return
+    item["target_days"] = parsed
+    _touch_item(item)
+    _save_items(items)
+    print(f"Set schedule for habit #{args.id}: {', '.join(parsed)}.")
+
+
 def cmd_month(args: argparse.Namespace) -> None:
     items = _load_items()
     item = _get_item(items, args.id)
@@ -991,6 +1072,7 @@ def cmd_export(args: argparse.Namespace) -> None:
         "updated_at",
         "goal_per_week",
         "note",
+        "target_days",
         "checkins",
     ]
     with open(path, "w", encoding="utf-8", newline="") as f:
@@ -1008,6 +1090,7 @@ def cmd_export(args: argparse.Namespace) -> None:
                     "updated_at": item.get("updated_at", ""),
                     "goal_per_week": item.get("goal_per_week") or "",
                     "note": item.get("note") or "",
+                    "target_days": ";".join(_clean_target_days(item.get("target_days"))),
                     "checkins": ";".join(checkins),
                 }
             )
@@ -1043,6 +1126,7 @@ def cmd_import(args: argparse.Namespace) -> None:
             checkins = _parse_checkins(row.get("checkins", ""))
             goal = _parse_goal(row.get("goal_per_week"))
             note = (row.get("note") or "").strip() or None
+            target_days = _parse_target_days_csv(row.get("target_days", ""))
             done = _parse_bool(row.get("done"))
             done_at = row.get("done_at") or None
             created_at = row.get("created_at") or None
@@ -1061,6 +1145,7 @@ def cmd_import(args: argparse.Namespace) -> None:
                 item["done_at"] = done_at or item.get("done_at")
                 item["goal_per_week"] = goal
                 item["note"] = note
+                item["target_days"] = _clean_target_days(target_days)
                 if checkins:
                     merged = _get_checkin_set(item).union(checkins)
                     item["checkins"] = sorted(merged)
@@ -1082,6 +1167,7 @@ def cmd_import(args: argparse.Namespace) -> None:
                 "updated_at": updated_at or created_at or _now_iso(),
                 "goal_per_week": goal,
                 "note": note,
+                "target_days": _clean_target_days(target_days),
                 "checkins": checkins,
             }
             items.append(_normalize_item(new_item))
@@ -1199,6 +1285,12 @@ def build_parser() -> argparse.ArgumentParser:
     goal.add_argument("per_week", type=int, nargs="?", default=0, help="Times per week (1-7)")
     goal.add_argument("--clear", action="store_true", help="Clear the goal")
     goal.set_defaults(func=cmd_goal)
+
+    schedule = sub.add_parser("schedule", help="Set or clear target weekdays for a habit")
+    schedule.add_argument("id", type=int, help="Habit id")
+    schedule.add_argument("days", nargs="*", help="Weekdays (mon tue wed thu fri sat sun)")
+    schedule.add_argument("--clear", action="store_true", help="Clear target weekdays")
+    schedule.set_defaults(func=cmd_schedule)
 
     note = sub.add_parser("note", help="Set or clear a note for a habit")
     note.add_argument("id", type=int, help="Habit id")

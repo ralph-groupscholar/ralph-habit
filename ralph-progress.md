@@ -31,7 +31,7 @@
 - Added weekly goal persistence to Postgres sync/pull and database schema migration.
 
 ## Iteration 16
-- Added per-habit notes with CLI management, export/import support, and Postgres sync.
+- Added per-habit weekday schedules with CLI management, export/import support, and Postgres sync.
 
 ## Iteration 21
 - Added a monthly calendar view command for per-habit check-ins with summary rate.
