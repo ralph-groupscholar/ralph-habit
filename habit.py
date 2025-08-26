@@ -350,6 +350,12 @@ def _short_list(values: List[str], limit: int) -> str:
     return f"{', '.join(values[:limit])} +{remainder} more"
 
 
+def _scheduled_window(target_days: List[str], window: List[date]) -> List[date]:
+    if not target_days:
+        return window
+    return [day for day in window if _weekday_key(day) in target_days]
+
+
 def cmd_add(args: argparse.Namespace) -> None:
     items = _load_items()
     item = {
@@ -400,6 +406,22 @@ def cmd_done(args: argparse.Namespace) -> None:
         _touch_item(item)
         _save_items(items)
         print(f"Completed habit #{args.id}: {item.get('title', '')}")
+        return
+    print(f"Habit #{args.id} not found.")
+
+
+def cmd_reopen(args: argparse.Namespace) -> None:
+    items = _load_items()
+    item = _get_item(items, args.id)
+    if item:
+        if not item.get("done"):
+            print(f"Habit #{args.id} is already active.")
+            return
+        item["done"] = False
+        item["done_at"] = None
+        _touch_item(item)
+        _save_items(items)
+        print(f"Reopened habit #{args.id}: {item.get('title', '')}")
         return
     print(f"Habit #{args.id} not found.")
 
@@ -897,6 +919,53 @@ def cmd_review(args: argparse.Namespace) -> None:
         )
 
 
+def cmd_coverage(args: argparse.Namespace) -> None:
+    items = _load_items()
+    if not args.all:
+        items = [i for i in items if not i.get("done")]
+    if not items:
+        print("No habits yet.")
+        return
+    if args.days <= 0:
+        print("Days must be at least 1.")
+        return
+    end_date = _today_local() if args.date is None else _parse_date(args.date)
+    window = _window_dates(end_date, args.days)
+    window_labels = f"{_format_date(window[0])} → {_format_date(window[-1])}"
+    print(f"Coverage window: {window_labels} ({args.days} days)")
+
+    for item in items:
+        checkins = _get_checkin_set(item)
+        target_days = _clean_target_days(item.get("target_days"))
+        scheduled_days = _scheduled_window(target_days, window)
+        expected = len(scheduled_days)
+        if expected == 0:
+            print(f"{item['id']:>3} {item.get('title', '')} | no scheduled days")
+            continue
+        actual = sum(1 for day in scheduled_days if _format_date(day) in checkins)
+        rate = (actual / expected) * 100 if expected else 0
+        missed_dates = [
+            _format_date(day)
+            for day in scheduled_days
+            if _format_date(day) not in checkins
+        ]
+        last_missed = missed_dates[-1] if missed_dates else "-"
+        if missed_dates:
+            recent = missed_dates[-args.limit :] if args.limit > 0 else []
+            recent_label = _short_list(recent, args.limit) if recent else ""
+            if recent_label:
+                missed_label = f"missed {len(missed_dates)} (last {last_missed}) | {recent_label}"
+            else:
+                missed_label = f"missed {len(missed_dates)} (last {last_missed})"
+        else:
+            missed_label = "missed 0"
+        print(
+            f"{item['id']:>3} {item.get('title', '')} | "
+            f"scheduled {actual}/{expected} ({rate:.0f}%) | "
+            f"{missed_label}"
+        )
+
+
 def cmd_timeline(args: argparse.Namespace) -> None:
     items = _load_items()
     if not args.all:
@@ -934,6 +1003,58 @@ def cmd_timeline(args: argparse.Namespace) -> None:
     total_possible = total_habits * args.days
     overall_rate = (total_checkins / total_possible) * 100 if total_possible else 0
     print(f"Overall check-ins: {total_checkins}/{total_possible} ({overall_rate:.0f}%)")
+
+
+def cmd_plan(args: argparse.Namespace) -> None:
+    items = _load_items()
+    if not args.all:
+        items = [i for i in items if not i.get("done")]
+    if not items:
+        print("No habits yet.")
+        return
+    if args.days <= 0:
+        print("Days must be at least 1.")
+        return
+    start_date = _today_local() if args.date is None else _parse_date(args.date)
+    end_date = start_date + timedelta(days=args.days - 1)
+    window = _date_range(start_date, end_date)
+    window_labels = f"{_format_date(window[0])} → {_format_date(window[-1])}"
+    print(f"Plan: {window_labels} ({args.days} days)")
+
+    prepared = []
+    for item in items:
+        prepared.append(
+            {
+                "title": item.get("title", ""),
+                "checkins": _get_checkin_set(item),
+                "target_days": _clean_target_days(item.get("target_days")),
+            }
+        )
+
+    for day in window:
+        day_key = _format_date(day)
+        day_label = _weekday_key(day)
+        scheduled_titles: List[str] = []
+        checked_count = 0
+        for entry in prepared:
+            target_days = entry["target_days"]
+            if target_days and day_label not in target_days:
+                continue
+            title = entry["title"]
+            if not title:
+                continue
+            did_checkin = day_key in entry["checkins"]
+            if did_checkin:
+                checked_count += 1
+                scheduled_titles.append(f"{title}✓")
+            else:
+                scheduled_titles.append(title)
+        scheduled_count = len(scheduled_titles)
+        summary = _short_list(scheduled_titles, args.limit)
+        if summary:
+            print(f"{day_key} | {checked_count}/{scheduled_count} checked | {summary}")
+        else:
+            print(f"{day_key} | {checked_count}/{scheduled_count} checked")
 
 
 def cmd_goal(args: argparse.Namespace) -> None:
@@ -1273,12 +1394,26 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--all", action="store_true", help="Include completed habits")
     review.set_defaults(func=cmd_review)
 
+    coverage = sub.add_parser("coverage", help="Check schedule coverage across habits")
+    coverage.add_argument("--days", type=int, default=14, help="Number of days to include")
+    coverage.add_argument("--date", help="Override end date (YYYY-MM-DD)")
+    coverage.add_argument("--limit", type=int, default=4, help="Max missed dates to list per habit")
+    coverage.add_argument("--all", action="store_true", help="Include completed habits")
+    coverage.set_defaults(func=cmd_coverage)
+
     timeline = sub.add_parser("timeline", help="Show daily check-in coverage across habits")
     timeline.add_argument("--days", type=int, default=14, help="Number of days to include")
     timeline.add_argument("--date", help="Override end date (YYYY-MM-DD)")
     timeline.add_argument("--limit", type=int, default=3, help="Max habit titles to list per day")
     timeline.add_argument("--all", action="store_true", help="Include completed habits")
     timeline.set_defaults(func=cmd_timeline)
+
+    plan = sub.add_parser("plan", help="Plan upcoming scheduled habits")
+    plan.add_argument("--days", type=int, default=7, help="Number of days to include")
+    plan.add_argument("--date", help="Override start date (YYYY-MM-DD)")
+    plan.add_argument("--limit", type=int, default=4, help="Max habit titles to list per day")
+    plan.add_argument("--all", action="store_true", help="Include completed habits")
+    plan.set_defaults(func=cmd_plan)
 
     goal = sub.add_parser("goal", help="Set or clear a weekly goal for a habit")
     goal.add_argument("id", type=int, help="Habit id")

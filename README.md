@@ -35,9 +35,15 @@ python habit.py nudge --week-start sun --date 2026-02-07
 python habit.py review
 python habit.py review --days 21 --stale-days 5
 python habit.py review --date 2026-02-07 --week-start sun --all
+python habit.py coverage
+python habit.py coverage --days 21 --limit 6
+python habit.py coverage --date 2026-02-07 --all
 python habit.py timeline
 python habit.py timeline --days 10 --limit 5
 python habit.py timeline --date 2026-02-07 --all
+python habit.py plan
+python habit.py plan --days 10
+python habit.py plan --date 2026-02-07 --limit 6 --all
 python habit.py goal 1 5
 python habit.py goal 1 --clear
 python habit.py schedule 1 mon wed fri

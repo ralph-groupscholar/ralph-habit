@@ -44,3 +44,9 @@
 
 ## Iteration 12
 - Added a timeline command to show daily habit coverage with compact per-day check-in summaries.
+
+## Iteration 58
+- Added a plan command to preview upcoming scheduled habits with per-day check-in status.
+
+## Iteration 65
+- Added a coverage command to measure scheduled-day adherence and highlight missed dates.
