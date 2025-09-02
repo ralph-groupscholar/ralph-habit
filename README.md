@@ -14,6 +14,7 @@ python habit.py uncheck 1 --date 2026-02-05
 python habit.py uncheck 1 --start 2026-02-01 --end 2026-02-03
 python habit.py streak 1
 python habit.py done 1
+python habit.py reopen 1
 python habit.py list --all
 python habit.py rename 1 "Drink more water"
 python habit.py stats

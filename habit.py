@@ -1318,6 +1318,10 @@ def build_parser() -> argparse.ArgumentParser:
     done.add_argument("id", type=int, help="Habit id")
     done.set_defaults(func=cmd_done)
 
+    reopen = sub.add_parser("reopen", help="Reopen an archived habit")
+    reopen.add_argument("id", type=int, help="Habit id")
+    reopen.set_defaults(func=cmd_reopen)
+
     delete = sub.add_parser("delete", help="Delete a habit")
     delete.add_argument("id", type=int, help="Habit id")
     delete.set_defaults(func=cmd_delete)

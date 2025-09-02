@@ -45,6 +45,9 @@
 ## Iteration 12
 - Added a timeline command to show daily habit coverage with compact per-day check-in summaries.
 
+## Iteration 49
+- Added a reopen command to restore archived habits back to active tracking.
+
 ## Iteration 58
 - Added a plan command to preview upcoming scheduled habits with per-day check-in status.
 
