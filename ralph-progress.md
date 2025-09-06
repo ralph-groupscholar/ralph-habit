@@ -53,3 +53,6 @@
 
 ## Iteration 65
 - Added a coverage command to measure scheduled-day adherence and highlight missed dates.
+
+## Iteration 101
+- Added a momentum command to compare scheduled-day adherence across multiple windows.

@@ -356,6 +356,44 @@ def _scheduled_window(target_days: List[str], window: List[date]) -> List[date]:
     return [day for day in window if _weekday_key(day) in target_days]
 
 
+def _parse_windows(raw: str) -> List[int]:
+    if not raw:
+        return []
+    parts = [part.strip() for part in raw.split(",") if part.strip()]
+    windows: List[int] = []
+    for part in parts:
+        try:
+            value = int(part)
+        except ValueError:
+            continue
+        if value <= 0:
+            continue
+        windows.append(value)
+    seen: Set[int] = set()
+    ordered: List[int] = []
+    for value in windows:
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+def _window_schedule_stats(
+    checkins: Set[str],
+    end_date: date,
+    days: int,
+    target_days: List[str],
+) -> Tuple[int, int]:
+    window = _window_dates(end_date, days)
+    scheduled = _scheduled_window(target_days, window)
+    expected = len(scheduled)
+    if expected == 0:
+        return 0, 0
+    actual = sum(1 for day in scheduled if _format_date(day) in checkins)
+    return actual, expected
+
+
 def cmd_add(args: argparse.Namespace) -> None:
     items = _load_items()
     item = {
@@ -481,6 +519,70 @@ def cmd_checkin(args: argparse.Namespace) -> None:
         f"Checked in habit #{args.id}: {item.get('title', '')} "
         f"({added} new from {_format_date(dates[0])} to {_format_date(dates[-1])})"
     )
+
+
+def cmd_checkin_all(args: argparse.Namespace) -> None:
+    items = _load_items()
+    if not items:
+        print("No habits yet.")
+        return
+    dates = _resolve_dates(args)
+    if dates is None:
+        return
+    active_items = [item for item in items if not item.get("done")]
+    if not active_items:
+        print("No active habits to check in.")
+        return
+    date_summaries = {day: {"added": 0, "titles": []} for day in dates}
+    total_added = 0
+
+    for item in active_items:
+        title = item.get("title", "")
+        target_days = _clean_target_days(item.get("target_days"))
+        if not target_days and not args.include_unscheduled:
+            continue
+        eligible_dates = []
+        for target_date in dates:
+            if target_days:
+                if _weekday_key(target_date) not in target_days:
+                    continue
+            eligible_dates.append(target_date)
+        if not eligible_dates:
+            continue
+        checkins = _get_checkin_set(item)
+        added_for_item = 0
+        for target_date in eligible_dates:
+            date_key = _format_date(target_date)
+            if date_key in checkins:
+                continue
+            checkins.add(date_key)
+            added_for_item += 1
+            total_added += 1
+            summary = date_summaries[target_date]
+            summary["added"] += 1
+            if title:
+                summary["titles"].append(title)
+        if added_for_item:
+            item["checkins"] = sorted(checkins)
+            _touch_item(item)
+
+    if total_added == 0:
+        print("No new check-ins added.")
+        return
+    _save_items(items)
+
+    for target_date in dates:
+        summary = date_summaries[target_date]
+        date_key = _format_date(target_date)
+        if summary["added"] == 0:
+            print(f"{date_key} | 0 habits checked in")
+            continue
+        label = _short_list(summary["titles"], args.limit)
+        if label:
+            print(f"{date_key} | {summary['added']} habits checked in | {label}")
+        else:
+            print(f"{date_key} | {summary['added']} habits checked in")
+    print(f"Total new check-ins: {total_added}")
 
 
 def cmd_uncheck(args: argparse.Namespace) -> None:
@@ -1057,6 +1159,39 @@ def cmd_plan(args: argparse.Namespace) -> None:
             print(f"{day_key} | {checked_count}/{scheduled_count} checked")
 
 
+def cmd_momentum(args: argparse.Namespace) -> None:
+    items = _load_items()
+    if not args.all:
+        items = [i for i in items if not i.get("done")]
+    if not items:
+        print("No habits yet.")
+        return
+    windows = _parse_windows(args.windows)
+    if not windows:
+        print("Provide window sizes like: 7,30,90.")
+        return
+    end_date = _today_local() if args.date is None else _parse_date(args.date)
+    window_label = ", ".join(str(value) for value in windows)
+    print(f"Momentum as of {_format_date(end_date)} (windows: {window_label})")
+
+    for item in items:
+        checkins = _get_checkin_set(item)
+        target_days = _clean_target_days(item.get("target_days"))
+        segments = []
+        for span in windows:
+            actual, expected = _window_schedule_stats(checkins, end_date, span, target_days)
+            if expected == 0:
+                segments.append(f"{span}d: -")
+            else:
+                rate = (actual / expected) * 100
+                segments.append(f"{span}d {actual}/{expected} ({rate:.0f}%)")
+        last_checkin = max(checkins) if checkins else "-"
+        print(
+            f"{item['id']:>3} {item.get('title', '')} | "
+            f"{' | '.join(segments)} | last {last_checkin}"
+        )
+
+
 def cmd_goal(args: argparse.Namespace) -> None:
     items = _load_items()
     item = _get_item(items, args.id)
@@ -1418,6 +1553,12 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--limit", type=int, default=4, help="Max habit titles to list per day")
     plan.add_argument("--all", action="store_true", help="Include completed habits")
     plan.set_defaults(func=cmd_plan)
+
+    momentum = sub.add_parser("momentum", help="Compare schedule adherence across windows")
+    momentum.add_argument("--windows", default="7,30,90", help="Comma-separated day windows")
+    momentum.add_argument("--date", help="Override reference date (YYYY-MM-DD)")
+    momentum.add_argument("--all", action="store_true", help="Include completed habits")
+    momentum.set_defaults(func=cmd_momentum)
 
     goal = sub.add_parser("goal", help="Set or clear a weekly goal for a habit")
     goal.add_argument("id", type=int, help="Habit id")
