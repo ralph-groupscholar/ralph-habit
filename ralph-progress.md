@@ -54,5 +54,8 @@
 ## Iteration 65
 - Added a coverage command to measure scheduled-day adherence and highlight missed dates.
 
+## Iteration 113
+- Added checkin-all to batch record check-ins for scheduled habits across a date or range.
+
 ## Iteration 101
 - Added a momentum command to compare scheduled-day adherence across multiple windows.

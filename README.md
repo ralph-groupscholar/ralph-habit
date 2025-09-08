@@ -10,6 +10,9 @@ python habit.py list
 python habit.py checkin 1
 python habit.py checkin 1 --date 2026-02-07
 python habit.py checkin 1 --start 2026-02-01 --end 2026-02-07
+python habit.py checkin-all
+python habit.py checkin-all --date 2026-02-07
+python habit.py checkin-all --start 2026-02-01 --end 2026-02-07 --include-unscheduled
 python habit.py uncheck 1 --date 2026-02-05
 python habit.py uncheck 1 --start 2026-02-01 --end 2026-02-03
 python habit.py streak 1

@@ -1473,6 +1473,18 @@ def build_parser() -> argparse.ArgumentParser:
     checkin.add_argument("--end", help="End date for range (YYYY-MM-DD)")
     checkin.set_defaults(func=cmd_checkin)
 
+    checkin_all = sub.add_parser("checkin-all", help="Record check-ins for scheduled habits")
+    checkin_all.add_argument("--date", help="Override date (YYYY-MM-DD)")
+    checkin_all.add_argument("--start", help="Start date for range (YYYY-MM-DD)")
+    checkin_all.add_argument("--end", help="End date for range (YYYY-MM-DD)")
+    checkin_all.add_argument(
+        "--include-unscheduled",
+        action="store_true",
+        help="Also check in habits without a schedule",
+    )
+    checkin_all.add_argument("--limit", type=int, default=4, help="Max habit titles to list per day")
+    checkin_all.set_defaults(func=cmd_checkin_all)
+
     uncheck = sub.add_parser("uncheck", help="Remove a check-in for a habit")
     uncheck.add_argument("id", type=int, help="Habit id")
     uncheck.add_argument("--date", help="Override date (YYYY-MM-DD)")
