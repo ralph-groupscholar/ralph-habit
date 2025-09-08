@@ -50,6 +50,8 @@ python habit.py plan --days 10
 python habit.py plan --date 2026-02-07 --limit 6 --all
 python habit.py momentum
 python habit.py momentum --windows 14,30 --date 2026-02-07 --all
+python habit.py weekday
+python habit.py weekday --days 21 --date 2026-02-07 --all
 python habit.py goal 1 5
 python habit.py goal 1 --clear
 python habit.py schedule 1 mon wed fri

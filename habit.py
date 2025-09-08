@@ -394,6 +394,40 @@ def _window_schedule_stats(
     return actual, expected
 
 
+def _weekday_occurrences(window: List[date]) -> Dict[str, int]:
+    counts = {label: 0 for label in WEEKDAY_ORDER}
+    for day in window:
+        counts[_weekday_key(day)] += 1
+    return counts
+
+
+def _weekday_checkins(window: List[date], checkins: Set[str]) -> Dict[str, int]:
+    counts = {label: 0 for label in WEEKDAY_ORDER}
+    for day in window:
+        if _format_date(day) in checkins:
+            counts[_weekday_key(day)] += 1
+    return counts
+
+
+def _weekday_summary(
+    window: List[date],
+    checkins: Set[str],
+    target_days: List[str],
+) -> Tuple[Dict[str, int], Dict[str, int], int, int]:
+    occurrences = _weekday_occurrences(window)
+    actual_counts = _weekday_checkins(window, checkins)
+    if target_days:
+        expected_counts = {
+            label: occurrences[label] if label in target_days else 0
+            for label in WEEKDAY_ORDER
+        }
+    else:
+        expected_counts = occurrences
+    total_actual = sum(actual_counts.values())
+    total_expected = sum(expected_counts.values())
+    return actual_counts, expected_counts, total_actual, total_expected
+
+
 def cmd_add(args: argparse.Namespace) -> None:
     items = _load_items()
     item = {
@@ -1192,6 +1226,37 @@ def cmd_momentum(args: argparse.Namespace) -> None:
         )
 
 
+def cmd_weekday(args: argparse.Namespace) -> None:
+    items = _load_items()
+    if not args.all:
+        items = [i for i in items if not i.get("done")]
+    if not items:
+        print("No habits yet.")
+        return
+    if args.days <= 0:
+        print("Days must be at least 1.")
+        return
+    end_date = _today_local() if args.date is None else _parse_date(args.date)
+    window = _window_dates(end_date, args.days)
+    window_labels = f"{_format_date(window[0])} → {_format_date(window[-1])}"
+    print(f"Weekday pattern: {window_labels} ({args.days} days)")
+
+    for item in items:
+        checkins = _get_checkin_set(item)
+        target_days = _clean_target_days(item.get("target_days"))
+        actual_counts, expected_counts, total_actual, total_expected = _weekday_summary(
+            window, checkins, target_days
+        )
+        segments = []
+        for label in WEEKDAY_ORDER:
+            segments.append(f"{label} {actual_counts[label]}/{expected_counts[label]}")
+        print(
+            f"{item['id']:>3} {item.get('title', '')} | "
+            f"{' | '.join(segments)} | "
+            f"total {total_actual}/{total_expected}"
+        )
+
+
 def cmd_goal(args: argparse.Namespace) -> None:
     items = _load_items()
     item = _get_item(items, args.id)
@@ -1571,6 +1636,12 @@ def build_parser() -> argparse.ArgumentParser:
     momentum.add_argument("--date", help="Override reference date (YYYY-MM-DD)")
     momentum.add_argument("--all", action="store_true", help="Include completed habits")
     momentum.set_defaults(func=cmd_momentum)
+
+    weekday = sub.add_parser("weekday", help="Show weekday patterns for habits")
+    weekday.add_argument("--days", type=int, default=30, help="Number of days to include")
+    weekday.add_argument("--date", help="Override end date (YYYY-MM-DD)")
+    weekday.add_argument("--all", action="store_true", help="Include completed habits")
+    weekday.set_defaults(func=cmd_weekday)
 
     goal = sub.add_parser("goal", help="Set or clear a weekly goal for a habit")
     goal.add_argument("id", type=int, help="Habit id")

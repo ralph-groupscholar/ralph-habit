@@ -59,3 +59,7 @@
 
 ## Iteration 101
 - Added a momentum command to compare scheduled-day adherence across multiple windows.
+
+## Iteration 35
+- Added weekday command to surface per-habit weekday patterns with scheduled vs actual counts.
+- Added weekday summary helpers and unit tests covering scheduled/unscheduled patterns.
