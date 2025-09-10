@@ -4,6 +4,7 @@ import csv
 import json
 import os
 import calendar
+import re
 from datetime import datetime, date, timedelta
 from typing import List, Dict, Any, Optional, Set, Tuple
 
@@ -44,6 +45,10 @@ def _normalize_item(item: Dict[str, Any]) -> Dict[str, Any]:
         return {}
     if "checkins" not in item or not isinstance(item.get("checkins"), list):
         item["checkins"] = []
+    if "tags" in item:
+        item["tags"] = _clean_tags(item.get("tags"))
+    else:
+        item["tags"] = []
     if "target_days" in item:
         item["target_days"] = _clean_target_days(item.get("target_days"))
     note = item.get("note")
@@ -163,6 +168,44 @@ def _clean_target_days(value: Any) -> List[str]:
     return [label for label in WEEKDAY_ORDER if label in normalized]
 
 
+def _clean_tags(value: Any) -> List[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        raw_values = [value]
+    elif isinstance(value, list):
+        raw_values = value
+    else:
+        return []
+    cleaned: List[str] = []
+    seen: Set[str] = set()
+    for entry in raw_values:
+        if not isinstance(entry, str):
+            continue
+        label = entry.strip().lower()
+        if not label:
+            continue
+        label = re.sub(r"[^a-z0-9_-]+", "-", label).strip("-")
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        cleaned.append(label)
+    return cleaned
+
+
+def _parse_tags_csv(raw: str) -> List[str]:
+    if not raw:
+        return []
+    parts = [part.strip() for part in raw.split(";") if part.strip()]
+    return _clean_tags(parts)
+
+
+def _tags_label(tags: List[str]) -> str:
+    if not tags:
+        return "tags: -"
+    return f"tags: {','.join(tags)}"
+
+
 def _target_days_label(days: List[str]) -> str:
     if not days:
         return "days: -"
@@ -253,6 +296,7 @@ def _ensure_table(cursor) -> None:
             goal_per_week INTEGER,
             note TEXT,
             target_days JSONB,
+            tags JSONB,
             checkins JSONB,
             PRIMARY KEY (profile, id)
         )
@@ -261,6 +305,7 @@ def _ensure_table(cursor) -> None:
     cursor.execute("ALTER TABLE ralph_habit_items ADD COLUMN IF NOT EXISTS goal_per_week INTEGER")
     cursor.execute("ALTER TABLE ralph_habit_items ADD COLUMN IF NOT EXISTS note TEXT")
     cursor.execute("ALTER TABLE ralph_habit_items ADD COLUMN IF NOT EXISTS target_days JSONB")
+    cursor.execute("ALTER TABLE ralph_habit_items ADD COLUMN IF NOT EXISTS tags JSONB")
 
 
 def _local_item_payload(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -276,6 +321,7 @@ def _local_item_payload(item: Dict[str, Any]) -> Dict[str, Any]:
     note = payload.get("note")
     payload["note"] = note.strip() if isinstance(note, str) and note.strip() else None
     payload["target_days"] = _clean_target_days(payload.get("target_days"))
+    payload["tags"] = _clean_tags(payload.get("tags"))
     return payload
 
 
@@ -339,6 +385,22 @@ def _note_label(note: Optional[str], limit: int = 24) -> str:
     if len(clean) <= limit:
         return f"note: {clean}"
     return f"note: {clean[: max(limit - 3, 0)]}..."
+
+
+def _matches_tags(item_tags: List[str], filter_tags: List[str]) -> bool:
+    if not filter_tags:
+        return True
+    if not item_tags:
+        return False
+    item_set = set(item_tags)
+    return all(tag in item_set for tag in filter_tags)
+
+
+def _filter_items_by_tags(items: List[Dict[str, Any]], tags: List[str]) -> List[Dict[str, Any]]:
+    if not tags:
+        return items
+    clean = _clean_tags(tags)
+    return [item for item in items if _matches_tags(_clean_tags(item.get("tags")), clean)]
 
 
 def _short_list(values: List[str], limit: int) -> str:
@@ -426,6 +488,33 @@ def _weekday_summary(
     total_actual = sum(actual_counts.values())
     total_expected = sum(expected_counts.values())
     return actual_counts, expected_counts, total_actual, total_expected
+
+
+def _streak_row(item: Dict[str, Any], target_date: date) -> Dict[str, Any]:
+    checkins = _get_checkin_set(item)
+    last_date = _last_checkin_date(checkins)
+    streaks = _compute_streaks(checkins, target_date) if checkins else {"current": 0, "longest": 0}
+    days_since = _days_since(target_date, last_date)
+    return {
+        "id": item.get("id", 0),
+        "title": item.get("title", ""),
+        "current": streaks["current"],
+        "longest": streaks["longest"],
+        "last_date": last_date,
+        "days_since": days_since,
+        "total": len(checkins),
+    }
+
+
+def _streak_sort_key(row: Dict[str, Any], mode: str) -> Tuple[Any, ...]:
+    title = (row.get("title") or "").lower()
+    if mode == "longest":
+        return (-row.get("longest", 0), -row.get("current", 0), title, row.get("id", 0))
+    if mode == "title":
+        return (title, row.get("id", 0))
+    if mode == "id":
+        return (row.get("id", 0),)
+    return (-row.get("current", 0), -row.get("longest", 0), title, row.get("id", 0))
 
 
 def cmd_add(args: argparse.Namespace) -> None:
@@ -665,6 +754,32 @@ def cmd_streak(args: argparse.Namespace) -> None:
     print(f"Current streak: {streaks['current']} day(s)")
     print(f"Longest streak: {streaks['longest']} day(s)")
     print(f"Total check-ins: {len(checkins)}")
+
+
+def cmd_streaks(args: argparse.Namespace) -> None:
+    items = _load_items()
+    if not args.all:
+        items = [i for i in items if not i.get("done")]
+    if not items:
+        print("No habits yet.")
+        return
+    target_date = _today_local() if args.date is None else _parse_date(args.date)
+    rows = [_streak_row(item, target_date) for item in items]
+    rows.sort(key=lambda row: _streak_sort_key(row, args.sort))
+    if args.limit > 0:
+        rows = rows[: args.limit]
+    print(f"Streaks as of {_format_date(target_date)} (sorted by {args.sort})")
+    for row in rows:
+        last_label = _format_date(row["last_date"]) if row["last_date"] else "-"
+        since = row["days_since"]
+        since_label = f"{since}d" if since is not None else "-"
+        print(
+            f"{row['id']:>3} {row['title']} | "
+            f"current {row['current']} | "
+            f"longest {row['longest']} | "
+            f"last {last_label} ({since_label}) | "
+            f"total {row['total']}"
+        )
 
 
 def cmd_stats(_: argparse.Namespace) -> None:
@@ -1561,6 +1676,18 @@ def build_parser() -> argparse.ArgumentParser:
     streak.add_argument("id", type=int, help="Habit id")
     streak.add_argument("--date", help="Override date (YYYY-MM-DD)")
     streak.set_defaults(func=cmd_streak)
+
+    streaks = sub.add_parser("streaks", help="List streaks across habits")
+    streaks.add_argument("--date", help="Override reference date (YYYY-MM-DD)")
+    streaks.add_argument(
+        "--sort",
+        choices=["current", "longest", "title", "id"],
+        default="current",
+        help="Sort order",
+    )
+    streaks.add_argument("--limit", type=int, default=10, help="Max habits to show (0 for all)")
+    streaks.add_argument("--all", action="store_true", help="Include completed habits")
+    streaks.set_defaults(func=cmd_streaks)
 
     stats = sub.add_parser("stats", help="Show habit stats")
     stats.set_defaults(func=cmd_stats)

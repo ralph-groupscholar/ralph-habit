@@ -16,6 +16,8 @@ python habit.py checkin-all --start 2026-02-01 --end 2026-02-07 --include-unsche
 python habit.py uncheck 1 --date 2026-02-05
 python habit.py uncheck 1 --start 2026-02-01 --end 2026-02-03
 python habit.py streak 1
+python habit.py streaks
+python habit.py streaks --sort longest --limit 0 --all
 python habit.py done 1
 python habit.py reopen 1
 python habit.py list --all
